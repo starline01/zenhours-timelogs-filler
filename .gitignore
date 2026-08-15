@@ -1,0 +1,9 @@
+# Local test artefacts
+test/filled.xlsx
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+~$*.xlsx

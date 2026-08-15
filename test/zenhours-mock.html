@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Zenhours — Timelogs (mock)</title>
+<style>
+  body { font: 14px "Segoe UI", system-ui, sans-serif; margin: 0; padding: 18px; color: #333; }
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .toolbar input { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; }
+  .toolbar button { background: #6dbe45; color: #fff; border: 0; padding: 7px 18px; border-radius: 16px; font-weight: 600; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+  thead th { background: #7ac943; color: #fff; padding: 10px 6px; font-size: 13px; text-align: center; }
+  thead th:nth-child(2), thead th:nth-child(4), thead th:nth-child(6), thead th:nth-child(8) { background: #6dbe45; }
+  tbody td { padding: 12px 6px; text-align: center; border-bottom: 1px solid #eee; font-size: 13px; }
+  tbody tr:nth-child(even) { background: #f7f7f7; }
+  tbody td:first-child { font-weight: 500; }
+  .muted { color: #999; }
+  a { color: #3b8ed0; cursor: pointer; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  input.dt { width: 132px; padding: 4px 5px; border: 1px solid #ccc; border-radius: 3px; font-size: 12px; text-align: center; }
+  #saved { max-width: 1100px; margin-top: 20px; padding: 10px; background: #12161c; color: #cbd5e0;
+           font: 11px Consolas, monospace; border-radius: 6px; white-space: pre-wrap; min-height: 40px; }
+</style>
+</head>
+<body>
+
+<div id="empheader" style="margin-bottom:14px;padding:10px 12px;background:#f3f6f9;border-radius:6px;max-width:1100px">
+  <h2 id="empname" style="margin:0 0 4px;font-size:17px"></h2>
+  <div style="color:#667;font-size:12px">Access ID: <b id="empid"></b> · Position: Security Guard</div>
+</div>
+
+<div class="toolbar">
+  <label>Date Range: Start:</label> <input value="08/01/2026">
+  <label>End:</label> <input value="08/14/2026">
+  <button onclick="return false">Search</button>
+</div>
+
+<table id="timelogs">
+  <thead>
+    <tr>
+      <th>Date</th><th>Schedule</th><th>Time In</th><th>Lunch Out</th><th>Lunch In</th>
+      <th>Break Out</th><th>Break In</th><th>Time Out</th><th></th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<div id="saved">Saved rows will be logged here.</div>
+
+<script>
+// ── Build the table exactly like the screenshots: 08/01 – 08/14, all blank ──
+const TIME_COLS = 6;
+const tbody = document.querySelector('#timelogs tbody');
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+const params = new URLSearchParams(location.search);
+
+// ?offset=1 reproduces a grid whose body rows carry an extra leading cell the
+// header does not have — this shifts every header-index lookup by one.
+const OFFSET = +(params.get('offset') || 0);
+
+// ?emp=N switches which guard this page belongs to, like a different employee URL.
+const STAFF = [
+  { name: 'Dela Cruz, Juan',  id: '121914' },
+  { name: 'Santos, Maria',    id: '121915' },
+  { name: 'Reyes, Antonio',   id: '121916' }
+];
+const WHO = STAFF[+(params.get('emp') || 0)] || STAFF[0];
+document.getElementById('empname').textContent = WHO.name;
+document.getElementById('empid').textContent = WHO.id;
+document.title = `Timelogs — ${WHO.name}`;
+
+for (let day = 14; day >= 1; day--) {          // page lists newest first
+  const iso = `2026-08-${pad(day)}`;
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    (OFFSET ? '<td class="rowid" style="width:4px;padding:0"></td>'.repeat(OFFSET) : '') +
+    `<td>${iso}</td><td class="muted">No Schedule</td>` +
+    Array.from({ length: TIME_COLS }, () => '<td class="muted">--:--</td>').join('') +
+    `<td><a class="edit">Edit</a></td>`;
+  tbody.appendChild(tr);
+}
+
+// ── Edit / Save / Cancel, mirroring the second screenshot ──────────────────
+const FIRST_TIME = OFFSET + 2;                 // cells: [ids…] date, schedule, times…, actions
+const ACTION_CELL = FIRST_TIME + TIME_COLS;
+
+tbody.addEventListener('click', (e) => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+
+  if (e.target.classList.contains('edit')) {
+    const iso = tr.cells[OFFSET].textContent.trim();
+    const [Y, M, D] = iso.split('-');
+    tr.dataset.snapshot = JSON.stringify(
+      Array.from(tr.cells).slice(FIRST_TIME, FIRST_TIME + TIME_COLS).map((c) => c.textContent)
+    );
+    const saved = JSON.parse(tr.dataset.saved || 'null');
+    for (let i = FIRST_TIME; i < FIRST_TIME + TIME_COLS; i++) {
+      // Zenhours prefills with the stored value, or the row's date at 12:00 AM
+      // when nothing has been saved for that column yet.
+      const prefill = (saved && saved[i - FIRST_TIME]) || `${M}/${D}/${Y} 12:00 AM`;
+      tr.cells[i].innerHTML = `<input class="dt" type="text" value="${prefill}">`;
+    }
+    tr.cells[ACTION_CELL].innerHTML = `<a class="save">Save</a> or <a class="cancel">Cancel</a>`;
+  }
+
+  if (e.target.classList.contains('save')) {
+    const iso = tr.cells[OFFSET].textContent.trim();
+    const values = [];
+    for (let i = FIRST_TIME; i < FIRST_TIME + TIME_COLS; i++) {
+      const input = tr.cells[i].querySelector('input');
+      const v = input ? input.value.trim() : '';
+      values.push(v);
+      // Display only the time half, like the real grid does
+      const timePart = v.split(/\s+/).slice(1).join(' ');
+      tr.cells[i].innerHTML = timePart ? timePart : '<span class="muted">--:--</span>';
+    }
+    tr.cells[ACTION_CELL].innerHTML = `<a class="edit">Edit</a>`;
+    tr.dataset.saved = JSON.stringify(values);
+    const log = document.getElementById('saved');
+    log.textContent += `\nSAVED ${iso} → ${JSON.stringify(values)}`;
+  }
+
+  if (e.target.classList.contains('cancel')) {
+    const snap = JSON.parse(tr.dataset.snapshot || '[]');
+    for (let i = FIRST_TIME; i < FIRST_TIME + TIME_COLS; i++) {
+      tr.cells[i].innerHTML = `<span class="muted">${snap[i - FIRST_TIME] || '--:--'}</span>`;
+    }
+    tr.cells[ACTION_CELL].innerHTML = `<a class="edit">Edit</a>`;
+  }
+});
+</script>
+
+<!-- Stands in for the userscript's @require line, which only Tampermonkey processes. -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+<!-- The userscript header is plain comments, so the file runs as a normal script here. -->
+<script src="../zenhours-dtr-filler.user.js"></script>
+</body>
+</html>
