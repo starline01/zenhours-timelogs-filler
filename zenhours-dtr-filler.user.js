@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.2.1
-// @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
+// @version      1.2.2
+// @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only â€” you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
 // @match        *://zenoras.com/*
@@ -13,26 +13,26 @@
 // @grant        none
 // ==/UserScript==
 
-// ─────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  UPDATING EVERY PC AT ONCE
-// ─────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  Installed from GitHub, Tampermonkey re-checks the @updateURL above and
-//  pulls a new copy automatically — but ONLY when @version is higher than the
+//  pulls a new copy automatically â€” but ONLY when @version is higher than the
 //  installed one. Editing the code without bumping @version updates nothing.
 //
-//  So the release routine is: change the code → bump @version → commit → push.
+//  So the release routine is: change the code â†’ bump @version â†’ commit â†’ push.
 //  Each PC picks it up on its next update check (Tampermonkey's default is
 //  daily; the dashboard's "Check for userscript updates" forces it now).
 //
 //  The raw.githubusercontent.com CDN caches for about five minutes, so a push
 //  is not visible instantly.
 //
-// ─────────────────────────────────────────────────────────────────────────
-//  SCOPE — every zenoras.com subdomain
-// ─────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  SCOPE â€” every zenoras.com subdomain
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  The two @match lines above cover any subdomain (rr.zenoras.com,
 //  anything-else.zenoras.com) plus the bare domain. @match lines are OR'd, so
-//  add more lines for any site on a different domain entirely — one per line,
+//  add more lines for any site on a different domain entirely â€” one per line,
 //  directly under the others.
 //
 //  The panel only appears once it detects a timelogs table, so it stays out of
@@ -43,9 +43,9 @@
 //  (These notes use // comments on purpose: a /* */ block cannot contain an
 //  @match glob, because the */ inside a *://*/* pattern closes it early.)
 //
-// ─────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  HOW TO USE
-// ─────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  1. Open the Zenhours timelogs page and Search your date range.
 //  2. A "DTR Filler" panel appears at the top-right. (Ctrl+Shift+D toggles it.)
 //  3. Copy your rows out of Excel / Google Sheets and paste into the box:
@@ -56,29 +56,29 @@
 //     Column order is the table's own order:
 //       Date | Time In | Lunch Out | Lunch In | Break Out | Break In | Time Out
 //
-//     A day-of-week column (TUESDAY) — or any other label column sitting
-//     between the date and the first time — is detected and ignored.
+//     A day-of-week column (TUESDAY) â€” or any other label column sitting
+//     between the date and the first time â€” is detected and ignored.
 //
 //     Times may be 24-hour (13:12) or 12-hour (1:12 PM); both are converted to
 //     whatever format Zenhours' own input is already showing.
 //
-//     Leave a cell empty (two tabs in a row) or put a dash to skip a column —
+//     Leave a cell empty (two tabs in a row) or put a dash to skip a column â€”
 //     e.g. a guard with no lunch or break. By default the script does not touch
 //     those fields, so they keep Zenhours' prefilled 12:00 AM and the log warns
 //     you about each one. Tick "Clear the field when my cell is blank/dash" if
 //     you would rather have the script empty them instead.
 //
 //     If your copied block includes a header row ("Date, Time In, ..."), the
-//     script reads it and maps the columns by name instead of by position —
+//     script reads it and maps the columns by name instead of by position â€”
 //     so a different column order still works.
 //
-//  3b. OR load a whole workbook: click "Load Excel / CSV…" and pick a file
-//     holding every guard (EmpID · Name · Date · Day · In · LOut · LIn · BOut ·
-//     BIn · Out). Editing in Zenoras is per employee, so the script reads the
+//  3b. OR load a whole workbook: click "Load Excel / CSVâ€¦" and pick a file
+//     holding every guard (EmpID Â· Name Â· Date Â· Day Â· In Â· LOut Â· LIn Â· BOut Â·
+//     BIn Â· Out). Editing in Zenoras is per employee, so the script reads the
 //     access ID and name shown on the page, finds that guard in the file, and
 //     loads only their days. Everyone else is ignored.
 //
-//     The workbook stays loaded as you move between employees — open the next
+//     The workbook stays loaded as you move between employees â€” open the next
 //     guard's page and it re-matches automatically. Filled guards are ticked in
 //     the list so you can see who is left.
 //
@@ -88,7 +88,7 @@
 //
 //  4. Click "Parse" to check what was read, then "Test 1st day" to try a
 //     single row, then "Fill all rows".
-//  5. The script clicks Edit and types the times. It NEVER clicks Save —
+//  5. The script clicks Edit and types the times. It NEVER clicks Save â€”
 //     review the green-highlighted inputs, then Save each row yourself.
 //
 //  "Undo fill" restores every input the script touched back to its original
@@ -101,7 +101,7 @@
     if (window.__zdfLoaded) return;
     window.__zdfLoaded = true;
 
-    // ── Column vocabulary ────────────────────────────────────────────────
+    // â”€â”€ Column vocabulary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Canonical column keys, in the table's left-to-right order.
     const COLUMNS = ['time_in', 'lunch_out', 'lunch_in', 'break_out', 'break_in', 'time_out'];
 
@@ -114,7 +114,7 @@
         time_out: 'Time Out'
     };
 
-    // Header text (normalized) → canonical key. Covers common wording drift.
+    // Header text (normalized) â†’ canonical key. Covers common wording drift.
     const HEADER_ALIASES = {
         'time in': 'time_in', 'timein': 'time_in', 'in': 'time_in',
         'clock in': 'time_in', 'clockin': 'time_in', 'start': 'time_in',
@@ -124,7 +124,7 @@
         'break in': 'break_in', 'breakin': 'break_in', 'break end': 'break_in',
         'time out': 'time_out', 'timeout': 'time_out', 'out': 'time_out',
         'clock out': 'time_out', 'clockout': 'time_out', 'end': 'time_out',
-        // Abbreviated spreadsheet headers: In · LOut · LIn · BOut · BIn · Out
+        // Abbreviated spreadsheet headers: In Â· LOut Â· LIn Â· BOut Â· BIn Â· Out
         'lout': 'lunch_out', 'l out': 'lunch_out',
         'lin': 'lunch_in', 'l in': 'lunch_in',
         'bout': 'break_out', 'b out': 'break_out',
@@ -144,7 +144,7 @@
     const DATE_ALIASES = new Set(['date', 'log date', 'work date', 'day date']);
     const DAY_ALIASES = new Set(['day', 'weekday', 'day of week', 'dow']);
 
-    const BLANK_MARKERS = ['--:--', '-- : --', '--', '-', '—', '–', '', 'n/a', 'na', 'none'];
+    const BLANK_MARKERS = ['--:--', '-- : --', '--', '-', 'â€”', 'â€“', '', 'n/a', 'na', 'none'];
 
     // Label columns that sit between the date and the times and must be ignored.
     const DAY_NAMES = new Set([
@@ -154,7 +154,7 @@
 
     const LS_KEY = 'zdf.settings.v1';
 
-    // ── Small utilities ──────────────────────────────────────────────────
+    // â”€â”€ Small utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
     const normKey = (s) => norm(s).toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
     const pad2 = (n) => String(n).padStart(2, '0');
@@ -185,7 +185,7 @@
         if (wide.length >= 3) return wide;
 
         // Single-space separated (hand-typed). Split on every space, then glue
-        // an AM/PM back onto the time it belongs to — "7:00 AM" is one field.
+        // an AM/PM back onto the time it belongs to â€” "7:00 AM" is one field.
         const merged = [];
         for (const token of line.trim().split(/\s+/)) {
             const prev = merged[merged.length - 1];
@@ -200,14 +200,14 @@
 
     /**
      * Parse a time string into {h, m} (24h). Accepts:
-     *   7:00 AM · 7:00am · 07:00 · 19:00 · 7 AM · 7pm · 1900 · 7.00 PM
+     *   7:00 AM Â· 7:00am Â· 07:00 Â· 19:00 Â· 7 AM Â· 7pm Â· 1900 Â· 7.00 PM
      * Returns null when the field is blank / a placeholder / unparseable.
      */
     function parseTime(raw) {
         let s = norm(raw).toLowerCase();
         if (!s || isBlankText(s)) return null;
 
-        // Excel stores a time as a fraction of a day (0.4305… = 10:20), and a
+        // Excel stores a time as a fraction of a day (0.4305â€¦ = 10:20), and a
         // datetime as serial.fraction. Either arrives here when a cell has no
         // display format for SheetJS to apply.
         if (/^\d*\.\d+$/.test(s)) {
@@ -259,7 +259,7 @@
         const s = norm(raw);
         if (!s) return null;
 
-        // Excel serial date (days since 1899-12-30), e.g. 46235 → 2026-08-01.
+        // Excel serial date (days since 1899-12-30), e.g. 46235 â†’ 2026-08-01.
         if (/^\d{5}(\.\d+)?$/.test(s)) {
             const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(+s) * 86400000);
             return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
@@ -305,7 +305,7 @@
 
     /**
      * Drop leading label columns that sit between the date and the first time
-     * — day-of-week ("TUESDAY"), employee name, "No Schedule", etc.
+     * â€” day-of-week ("TUESDAY"), employee name, "No Schedule", etc.
      * Stops at the first blank cell, because a blank is a real (skipped) time
      * column and dropping it would shift every column after it.
      */
@@ -341,7 +341,7 @@
             // Align positionally; anything unrecognised (a "Day" column) becomes null.
             columnOrder = firstFields.slice(1).map((f) => HEADER_ALIASES[normKey(f)] || null);
             startIndex = 1;
-            out.mapping = columnOrder.map((c) => (c ? COLUMN_LABELS[c] : '(ignored)')).join(' · ');
+            out.mapping = columnOrder.map((c) => (c ? COLUMN_LABELS[c] : '(ignored)')).join(' Â· ');
         }
 
         for (let i = startIndex; i < lines.length; i++) {
@@ -349,7 +349,7 @@
             const fields = splitFields(line);
             const date = parseDate(fields[0], fallbackYear);
             if (!date) {
-                out.warnings.push(`Line ${i + 1}: no date found — skipped ("${norm(line).slice(0, 48)}")`);
+                out.warnings.push(`Line ${i + 1}: no date found â€” skipped ("${norm(line).slice(0, 48)}")`);
                 continue;
             }
 
@@ -360,7 +360,7 @@
             if (!order) {
                 rest = stripLabelColumns(rest.slice(), dropped);
                 order = COLUMNS.slice();
-                // Only two values and both are times → Time In / Time Out.
+                // Only two values and both are times â†’ Time In / Time Out.
                 if (rest.length === 2 && parseTime(rest[0]) && parseTime(rest[1])) {
                     order = ['time_in', 'time_out'];
                 }
@@ -368,7 +368,7 @@
             if (dropped.length) {
                 const labels = dropped.filter((d) => !DAY_NAMES.has(normKey(d)));
                 if (labels.length) {
-                    out.warnings.push(`Line ${i + 1}: ignored extra column(s) before the times — ${labels.join(', ')}`);
+                    out.warnings.push(`Line ${i + 1}: ignored extra column(s) before the times â€” ${labels.join(', ')}`);
                 }
             }
 
@@ -380,15 +380,15 @@
                 if (norm(field) === '' || isBlankText(field)) { blanks.push(col); return; }
                 const t = parseTime(field);
                 if (t) times[col] = t;
-                else out.warnings.push(`Line ${i + 1}: could not read "${norm(field)}" as a time — ${COLUMN_LABELS[col]} skipped`);
+                else out.warnings.push(`Line ${i + 1}: could not read "${norm(field)}" as a time â€” ${COLUMN_LABELS[col]} skipped`);
             });
 
             if (rest.length > order.length) {
-                out.warnings.push(`Line ${i + 1}: ${rest.length} time columns but the table has ${order.length} — extras ignored`);
+                out.warnings.push(`Line ${i + 1}: ${rest.length} time columns but the table has ${order.length} â€” extras ignored`);
             }
 
             if (!Object.keys(times).length) {
-                out.warnings.push(`Line ${i + 1}: date ${date} had no usable times — skipped`);
+                out.warnings.push(`Line ${i + 1}: date ${date} had no usable times â€” skipped`);
                 continue;
             }
             out.entries.push({ date, times, blanks, raw: line });
@@ -419,7 +419,7 @@
         return map;
     }
 
-    /** The year most represented in the table — used when the paste omits one. */
+    /** The year most represented in the table â€” used when the paste omits one. */
     function pageYear() {
         const years = {};
         for (const iso of indexRows().keys()) {
@@ -489,17 +489,17 @@
     // Attributes worth interrogating when an input names its own column.
     const ATTR_HINTS = ['name', 'id', 'data-column', 'data-field', 'data-name', 'aria-label', 'title', 'placeholder'];
 
-    /** Does this input name its own column? ("txtTimeIn", "log[lunch_out]", …) */
+    /** Does this input name its own column? ("txtTimeIn", "log[lunch_out]", â€¦) */
     function columnFromAttributes(input) {
         for (const attr of ATTR_HINTS) {
             const raw = input.getAttribute(attr);
             if (!raw) continue;
             const spaced = normKey(String(raw)
-                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')     // camelCase → camel Case
+                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')     // camelCase â†’ camel Case
                 .replace(/[_\-.\[\]]+/g, ' '));
             if (HEADER_ALIASES[spaced]) return HEADER_ALIASES[spaced];
             // Substring match, but only on aliases long enough to be unambiguous
-            // — never on bare "in"/"out", which appear inside countless names.
+            // â€” never on bare "in"/"out", which appear inside countless names.
             for (const alias of Object.keys(HEADER_ALIASES)) {
                 if (alias.length >= 6 && spaced.includes(alias)) return HEADER_ALIASES[alias];
             }
@@ -535,7 +535,7 @@
 
     /**
      * Map the row's edit inputs to canonical column keys.
-     * Three strategies, strongest first — each validated before it is accepted,
+     * Three strategies, strongest first â€” each validated before it is accepted,
      * so a partial match can never shift the columns.
      */
     function mapRowInputs(tr) {
@@ -583,7 +583,7 @@
             };
         }
         if (inputs.length > COLUMNS.length) {
-            // More inputs than time columns — keep whatever the header did agree on.
+            // More inputs than time columns â€” keep whatever the header did agree on.
             return { map: build(byHeader), strategy: 'header labels (partial)' };
         }
         return { map: {}, strategy: 'none' };
@@ -654,7 +654,7 @@
         if (template && /^[0-9:]+\s*[ap]?\.?m?\.?$/i.test(template)) {
             return formatTimeLike(template, t);          // time-only field
         }
-        // Nothing to imitate — use the format the page showed us in the screenshots.
+        // Nothing to imitate â€” use the format the page showed us in the screenshots.
         const [Y, M, D] = iso.split('-');
         const h12 = t.h % 12 || 12;
         return `${M}/${D}/${Y} ${pad2(h12)}:${pad2(t.m)} ${t.h >= 12 ? 'PM' : 'AM'}`;
@@ -733,7 +733,7 @@
         for (const entry of entries) {
             const existing = indexRows().get(entry.date);
             if (!existing) {
-                log(`✗ ${entry.date} — no row on this page (check your date range)`, 'err');
+                log(`âœ— ${entry.date} â€” no row on this page (check your date range)`, 'err');
                 missingRows++;
                 continue;
             }
@@ -745,7 +745,7 @@
 
             const tr = await ensureEditMode(entry.date);
             if (!tr) {
-                log(`✗ ${entry.date} — could not open Edit (no inputs appeared)`, 'err');
+                log(`âœ— ${entry.date} â€” could not open Edit (no inputs appeared)`, 'err');
                 missingRows++;
                 continue;
             }
@@ -753,7 +753,7 @@
             const mapped = mapRowInputs(tr);
             const inputs = mapped.map;
             if (!Object.keys(inputs).length) {
-                log(`✗ ${entry.date} — row is in edit mode but no inputs could be mapped`, 'err');
+                log(`âœ— ${entry.date} â€” row is in edit mode but no inputs could be mapped`, 'err');
                 missingRows++;
                 continue;
             }
@@ -786,7 +786,7 @@
                 if (!t) continue;
                 const input = inputs[col];
                 if (!input) {
-                    log(`  · ${entry.date} — no "${COLUMN_LABELS[col]}" field in this row`, 'warn');
+                    log(`  Â· ${entry.date} â€” no "${COLUMN_LABELS[col]}" field in this row`, 'warn');
                     continue;
                 }
                 if (opts.onlyBlank && alreadyFilled[col]) {
@@ -806,13 +806,13 @@
             if (touched) {
                 filledRows++;
                 tr.classList.add('zdf-row-touched');
-                log(`✓ ${entry.date} — ${touched} field${touched === 1 ? '' : 's'}: ${parts.join(', ')}`, 'ok');
+                log(`âœ“ ${entry.date} â€” ${touched} field${touched === 1 ? '' : 's'}: ${parts.join(', ')}`, 'ok');
                 if (filledRows === 1) tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
             } else {
-                log(`· ${entry.date} — nothing to write`, 'warn');
+                log(`Â· ${entry.date} â€” nothing to write`, 'warn');
             }
             if (leftAlone.length) {
-                log(`  ! ${entry.date} — ${leftAlone.join(', ')} left untouched, still showing the prefilled 12:00 AM`, 'warn');
+                log(`  ! ${entry.date} â€” ${leftAlone.join(', ')} left untouched, still showing the prefilled 12:00 AM`, 'warn');
                 blanksLeft += leftAlone.length;
             }
 
@@ -847,7 +847,7 @@
         const lines = [];
         lines.push(`URL: ${location.origin}${location.pathname}`);
         lines.push(`Rows with a date: ${rows.size}`);
-        lines.push(`Range: ${dates[0] || '—'} .. ${dates[dates.length - 1] || '—'}`);
+        lines.push(`Range: ${dates[0] || 'â€”'} .. ${dates[dates.length - 1] || 'â€”'}`);
         if (sample) {
             const header = headerFor(sample);
             lines.push(`Header cells: ${JSON.stringify(header)}`);
@@ -871,14 +871,14 @@
     }
 
     // =====================================================================
-    //  EMPLOYEE ROSTER — one workbook holding every guard
+    //  EMPLOYEE ROSTER â€” one workbook holding every guard
     // =====================================================================
     //  Editing in Zenoras is per employee, so a workbook covering everyone is
     //  filtered down to whoever this page belongs to. The page is matched by
     //  the access ID and name it displays, never by position in the file.
 
     const ROSTER_KEY = 'zdf.roster.v1';
-    const LINKS_KEY = 'zdf.pagelinks.v1';     // URL path → employee key, once confirmed
+    const LINKS_KEY = 'zdf.pagelinks.v1';     // URL path â†’ employee key, once confirmed
     const DONE_KEY = 'zdf.done.v1';
 
     let roster = null;        // { employees: [{key, id, name, rows:[{date,times,blanks}]}], source }
@@ -888,7 +888,7 @@
     }
     function writeStore(key, value) {
         try { localStorage.setItem(key, JSON.stringify(value)); return true; }
-        catch (e) { return false; }          // quota — keep working from memory
+        catch (e) { return false; }          // quota â€” keep working from memory
     }
 
     /** Locate the id / name / date / time columns in a sheet's header row. */
@@ -945,10 +945,10 @@
 
         for (const { name: sheetName, rows } of sheets) {
             if (!rows || !rows.length) continue;
-            // Documentation tabs are expected in the template — skip them quietly.
+            // Documentation tabs are expected in the template â€” skip them quietly.
             if (/^\s*(read\s*me|readme|instructions?|notes?|guide|help|legend)\s*$/i.test(sheetName)) continue;
             const cols = detectSheetColumns(rows) || positionalColumns(rows);
-            if (!cols) { warnings.push(`Sheet "${sheetName}": no date + time columns found — skipped`); continue; }
+            if (!cols) { warnings.push(`Sheet "${sheetName}": no date + time columns found â€” skipped`); continue; }
 
             const fallbackYear = new Date().getFullYear();
             let lastId = '', lastName = '';
@@ -1017,13 +1017,13 @@
                         return;
                     }
                     if (typeof XLSX === 'undefined') {
-                        reject(new Error('the Excel library did not load — save the file as CSV and try again'));
+                        reject(new Error('the Excel library did not load â€” save the file as CSV and try again'));
                         return;
                     }
                     const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array', cellDates: true });
                     resolve(wb.SheetNames.map((name) => ({
                         name,
-                        // header:1 → arrays of cells; raw:false → use each cell's displayed text
+                        // header:1 â†’ arrays of cells; raw:false â†’ use each cell's displayed text
                         rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' })
                     })));
                 } catch (err) { reject(err); }
@@ -1034,7 +1034,7 @@
         });
     }
 
-    // ── Working out which employee this page belongs to ──────────────────
+    // â”€â”€ Working out which employee this page belongs to â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /** Page text with the timelogs grid and our own panel stripped out. */
     function pageIdentityText() {
@@ -1052,7 +1052,7 @@
 
     /**
      * Score each employee against the page. Returns the single confident match,
-     * or null — which leaves the user to choose. Guessing wrong here would write
+     * or null â€” which leaves the user to choose. Guessing wrong here would write
      * one guard's hours onto another, so ties and weak matches never auto-select.
      */
     function matchEmployeeToPage(rosterData) {
@@ -1182,12 +1182,12 @@
         panel.innerHTML = `
             <div id="zdf-head">
                 <b>Zenhours DTR Filler</b>
-                <button id="zdf-min" title="Collapse">–</button>
-                <button id="zdf-close" title="Hide (Ctrl+Shift+D)">×</button>
+                <button id="zdf-min" title="Collapse">â€“</button>
+                <button id="zdf-close" title="Hide (Ctrl+Shift+D)">Ã—</button>
             </div>
             <div id="zdf-body">
                 <div class="zdf-file">
-                    <label for="zdf-xlsx" id="zdf-filelabel">Load Excel / CSV…</label>
+                    <label for="zdf-xlsx" id="zdf-filelabel">Load Excel / CSVâ€¦</label>
                     <input type="file" id="zdf-xlsx" accept=".xlsx,.xls,.csv">
                     <button id="zdf-forget" title="Forget the loaded file">Clear</button>
                 </div>
@@ -1196,8 +1196,8 @@
                     <div id="zdf-match"></div>
                 </div>
                 <textarea id="zdf-paste" spellcheck="false"
-                    placeholder="Paste from Excel — one day per line:&#10;8/1/2026&#9;TUESDAY&#9;10:20&#9;12:40&#9;13:12&#9;17:00&#9;17:30&#9;21:00&#10;8/2/2026&#9;WEDNESDAY&#9;10:25&#9;12:45&#9;13:15&#9;16:39&#9;17:09&#9;21:00"></textarea>
-                <div class="zdf-hint">Date · <i>(day name — ignored)</i> · Time In · Lunch Out · Lunch In · Break Out · Break In · Time Out<br>
+                    placeholder="Paste from Excel â€” one day per line:&#10;8/1/2026&#9;TUESDAY&#9;10:20&#9;12:40&#9;13:12&#9;17:00&#9;17:30&#9;21:00&#10;8/2/2026&#9;WEDNESDAY&#9;10:25&#9;12:45&#9;13:15&#9;16:39&#9;17:09&#9;21:00"></textarea>
+                <div class="zdf-hint">Date Â· <i>(day name â€” ignored)</i> Â· Time In Â· Lunch Out Â· Lunch In Â· Break Out Â· Break In Â· Time Out<br>
                     24-hour or AM/PM both work. Leave a cell empty or put a dash to skip that column.</div>
                 <div class="zdf-btns">
                     <button id="zdf-parse">Parse</button>
@@ -1234,7 +1234,7 @@
 
         // Only restore a remembered paste in manual mode. With a workbook loaded
         // the box must always be (re)filled from the employee matched to THIS
-        // page — otherwise the previous guard's hours linger in the box and can
+        // page â€” otherwise the previous guard's hours linger in the box and can
         // be written onto whoever's page you land on next.
         const storedRoster = readStore(ROSTER_KEY, null);
         const hasRoster = !!(storedRoster && storedRoster.employees && storedRoster.employees.length);
@@ -1262,11 +1262,11 @@
         function currentParse() {
             const result = parsePaste($id('zdf-paste').value, pageYear());
             result.warnings.forEach((w) => log('! ' + w, 'warn'));
-            if (result.mapping) log('Header detected → ' + result.mapping, 'info');
+            if (result.mapping) log('Header detected â†’ ' + result.mapping, 'info');
             return result;
         }
 
-        // ── Roster: load a workbook, pick the guard this page belongs to ─
+        // â”€â”€ Roster: load a workbook, pick the guard this page belongs to â”€
         const empSelect = $id('zdf-emp');
         const matchBox = $id('zdf-match');
 
@@ -1294,27 +1294,27 @@
             }
             $id('zdf-roster').style.display = 'block';
             $id('zdf-filelabel').textContent =
-                `${roster.source} — ${roster.employees.length} employees, ${roster.totalRows} rows`;
+                `${roster.source} â€” ${roster.employees.length} employees, ${roster.totalRows} rows`;
 
-            empSelect.innerHTML = '<option value="">— choose the employee for this page —</option>' +
+            empSelect.innerHTML = '<option value="">â€” choose the employee for this page â€”</option>' +
                 roster.employees.map((e) => {
                     const label = [e.name || '(no name)', e.id ? `#${e.id}` : '', `${e.rows.length}d`]
-                        .filter(Boolean).join(' · ');
-                    return `<option value="${e.key}">${isDone(e) ? '✓ ' : ''}${label}</option>`;
+                        .filter(Boolean).join(' Â· ');
+                    return `<option value="${e.key}">${isDone(e) ? 'âœ“ ' : ''}${label}</option>`;
                 }).join('');
 
             const match = autoMatch ? matchEmployeeToPage(roster) : null;
             if (match) {
                 empSelect.value = match.employee.key;
                 matchBox.className = 'hit';
-                matchBox.textContent = `Matched this page by ${match.reason} → ${match.employee.name || match.employee.key}`
+                matchBox.textContent = `Matched this page by ${match.reason} â†’ ${match.employee.name || match.employee.key}`
                     + ` (${match.employee.rows.length} days loaded)`;
                 loadSelectedIntoBox(false);
             } else if (autoMatch) {
                 empSelect.value = '';
                 $id('zdf-paste').value = '';        // never leave another guard's times sitting here
                 matchBox.className = 'miss';
-                matchBox.textContent = 'Could not tell which employee this page is for — pick them from the list above. '
+                matchBox.textContent = 'Could not tell which employee this page is for â€” pick them from the list above. '
                     + 'Filling is blocked until you do.';
             }
         }
@@ -1323,7 +1323,7 @@
             const file = e.target.files && e.target.files[0];
             if (!file) return;
             logBox.innerHTML = '';
-            log(`Reading ${file.name}…`, 'info');
+            log(`Reading ${file.name}â€¦`, 'info');
             try {
                 const sheets = await readWorkbook(file);
                 roster = buildRoster(sheets, file.name);
@@ -1333,11 +1333,11 @@
                     return;
                 }
                 if (!writeStore(ROSTER_KEY, roster)) {
-                    log('File is too large to remember between pages — it stays loaded for this page only.', 'warn');
+                    log('File is too large to remember between pages â€” it stays loaded for this page only.', 'warn');
                 }
                 log(`Loaded ${roster.employees.length} employees, ${roster.totalRows} day rows.`, 'ok');
                 roster.warnings.slice(0, 6).forEach((w) => log('! ' + w, 'warn'));
-                if (roster.warnings.length > 6) log(`! …and ${roster.warnings.length - 6} more warnings.`, 'warn');
+                if (roster.warnings.length > 6) log(`! â€¦and ${roster.warnings.length - 6} more warnings.`, 'warn');
                 renderRoster(true);
                 status(`${roster.employees.length} employees loaded.`);
             } catch (err) {
@@ -1351,20 +1351,20 @@
             const emp = selectedEmployee();
             if (!emp) return;
             matchBox.className = 'hit';
-            matchBox.textContent = `${emp.name || emp.key} — ${emp.rows.length} days loaded into the box below.`;
+            matchBox.textContent = `${emp.name || emp.key} â€” ${emp.rows.length} days loaded into the box below.`;
             loadSelectedIntoBox(true);        // remember: you told us who this page is
-            log(`Selected ${emp.name || emp.key}${emp.id ? ` (#${emp.id})` : ''} — ${emp.rows.length} days.`, 'info');
+            log(`Selected ${emp.name || emp.key}${emp.id ? ` (#${emp.id})` : ''} â€” ${emp.rows.length} days.`, 'info');
         });
 
         $id('zdf-forget').addEventListener('click', () => {
             roster = null;
             try { localStorage.removeItem(ROSTER_KEY); } catch (err) { /* ignore */ }
             $id('zdf-roster').style.display = 'none';
-            $id('zdf-filelabel').textContent = 'Load Excel / CSV…';
+            $id('zdf-filelabel').textContent = 'Load Excel / CSVâ€¦';
             log('Forgot the loaded file. The paste box still works on its own.', 'info');
         });
 
-        // ── Buttons ──────────────────────────────────────────────────────
+        // â”€â”€ Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         $id('zdf-parse').addEventListener('click', () => {
             logBox.innerHTML = '';
             const { entries } = currentParse();
@@ -1378,12 +1378,12 @@
                     .filter((c) => e.times[c] || (e.blanks || []).includes(c))
                     .map((c) => e.times[c]
                         ? `${COLUMN_LABELS[c]} ${formatTimeLike('12:00 AM', e.times[c])}`
-                        : `${COLUMN_LABELS[c]} —`)
-                    .join(' · ');
-                log(`${on ? '✓' : '✗'} ${e.date} → ${preview}`, on ? 'ok' : 'err');
+                        : `${COLUMN_LABELS[c]} â€”`)
+                    .join(' Â· ');
+                log(`${on ? 'âœ“' : 'âœ—'} ${e.date} â†’ ${preview}`, on ? 'ok' : 'err');
             }
             log(`Table has ${rows.size} dated row(s).`, 'info');
-            status(`${entries.length} line(s) parsed · ${found} matched on page.`);
+            status(`${entries.length} line(s) parsed Â· ${found} matched on page.`);
             persist();
         });
 
@@ -1395,7 +1395,7 @@
             // so this refuses rather than guesses.
             if (roster && roster.employees.length && !selectedEmployee()) {
                 log('No employee selected for this page.', 'err');
-                log('Pick the guard from the list above — or click Clear to drop the file and paste manually.', 'info');
+                log('Pick the guard from the list above â€” or click Clear to drop the file and paste manually.', 'info');
                 status('Pick the employee first.');
                 return;
             }
@@ -1410,11 +1410,11 @@
                 clearBlanks: $id('zdf-clearblanks').checked,
                 delay: 120
             };
-            if (!opts.openEdit) log('Auto-Edit is off — only rows already in edit mode will fill.', 'warn');
+            if (!opts.openEdit) log('Auto-Edit is off â€” only rows already in edit mode will fill.', 'warn');
 
             const buttons = panel.querySelectorAll('.zdf-btns button');
             buttons.forEach((b) => (b.disabled = true));
-            status(limitToFirst ? 'Filling first row…' : `Filling ${list.length} row(s)…`);
+            status(limitToFirst ? 'Filling first rowâ€¦' : `Filling ${list.length} row(s)â€¦`);
 
             try {
                 if (!opts.openEdit) {
@@ -1426,12 +1426,12 @@
                 }
                 const runnable = list.filter((e) => !e.__skip);
                 const r = await runFill(runnable, opts, log);
-                log('—', 'info');
+                log('â€”', 'info');
                 log(`Done: ${r.filledFields} field(s) across ${r.filledRows} row(s)` +
                     (r.skipped ? `, ${r.skipped} kept (already had a value)` : '') +
                     (r.blanksLeft ? `, ${r.blanksLeft} left at 12:00 AM (blank in your paste)` : '') +
                     (r.missingRows ? `, ${r.missingRows} row(s) not filled` : '') + '.', 'ok');
-                log('Nothing was saved — review the highlighted inputs, then click Save on each row.', 'info');
+                log('Nothing was saved â€” review the highlighted inputs, then click Save on each row.', 'info');
                 status(`Filled ${r.filledRows} row(s). Click Save yourself.`);
 
                 // Track progress through the roster so you can pick up where you left off.
@@ -1461,7 +1461,7 @@
             const text = diagnostics();
             try {
                 await navigator.clipboard.writeText(text);
-                log('Diagnostics copied to clipboard — paste them to Claude if a row will not fill.', 'ok');
+                log('Diagnostics copied to clipboard â€” paste them to Claude if a row will not fill.', 'ok');
             } catch (e) {
                 log('Clipboard blocked. Diagnostics printed below:', 'warn');
                 log(text, 'info');
@@ -1472,7 +1472,7 @@
         $id('zdf-openedit').addEventListener('change', persist);
         $id('zdf-paste').addEventListener('change', persist);
 
-        // ── Collapse / hide / drag ───────────────────────────────────────
+        // â”€â”€ Collapse / hide / drag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         $id('zdf-min').addEventListener('click', () => panel.classList.toggle('zdf-collapsed'));
         $id('zdf-close').addEventListener('click', () => {
             panel.style.display = 'none';
@@ -1511,7 +1511,7 @@
         })();
 
         const rows = indexRows();
-        log(`Timelogs table detected — ${rows.size} dated row(s).`, 'ok');
+        log(`Timelogs table detected â€” ${rows.size} dated row(s).`, 'ok');
         status(`${rows.size} row(s) on page. Paste your logs and click Parse.`);
 
         // A workbook loaded on an earlier employee's page is still available here.
@@ -1519,16 +1519,16 @@
         if (stored && stored.employees && stored.employees.length) {
             roster = stored;
             const doneCount = roster.employees.filter(isDone).length;
-            log(`Workbook "${roster.source}" still loaded — ${roster.employees.length} employees`
+            log(`Workbook "${roster.source}" still loaded â€” ${roster.employees.length} employees`
                 + `${doneCount ? `, ${doneCount} already filled` : ''}.`, 'ok');
             renderRoster(true);
         }
         if (typeof XLSX === 'undefined') {
-            log('Excel support unavailable (the library did not load) — CSV files and pasting still work.', 'warn');
+            log('Excel support unavailable (the library did not load) â€” CSV files and pasting still work.', 'warn');
         }
     }
 
-    // ── Only show up on a page that actually has the timelogs table ──────
+    // â”€â”€ Only show up on a page that actually has the timelogs table â”€â”€â”€â”€â”€â”€
     function looksLikeTimelogsPage() {
         const rows = indexRows();
         if (rows.size < 2) return false;
@@ -1547,7 +1547,7 @@
         setTimeout(waitForTable, 500);
     })();
 
-    // The table reloads after "Search" — re-check so the panel appears then too.
+    // The table reloads after "Search" â€” re-check so the panel appears then too.
     const mo = new MutationObserver(() => {
         if (!window.__zdfInited && looksLikeTimelogsPage() && !document.getElementById('zdf-panel')) {
             window.__zdfInited = true;

@@ -24,11 +24,18 @@ the times into the six time fields.
 ### Pushing a change to every PC
 
 Tampermonkey only updates when the version number goes **up**. Editing the code
-alone changes nothing on the other machines.
+alone changes nothing on the other machines — which is why there's a script for it:
 
-1. Make your change.
-2. **Bump `@version`** on line 4 (`1.2.1` → `1.2.2`).
-3. Commit and push to `main`.
+```powershell
+.\release.ps1 -Message "fix the lunch column"
+```
+
+That bumps `@version`, syntax-checks the file, commits and pushes. If the syntax
+check fails it reverts the bump and pushes nothing. Use `-Version 1.3.0` to set an
+exact number instead of bumping the patch digit.
+
+Doing it by hand is the same three steps: make the change, bump `@version` on
+line 4, commit and push to `main`.
 
 Each PC picks it up on its next check — Tampermonkey's default is roughly daily.
 To pull it immediately on a given PC: Tampermonkey dashboard → **Installed
