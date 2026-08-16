@@ -101,15 +101,9 @@ down to whoever the current page belongs to.
 a worked example; sheets named READ ME / Instructions / Notes / Guide are skipped
 by the importer, so documentation can live in the same workbook.
 
-1. Click **Load Excel / CSV…** and pick the file. Expected layout — one sheet,
-   one row per employee per day:
-
-   | EmpID | Name | Date | Day | In | LOut | LIn | BOut | BIn | Out |
-   |---|---|---|---|---|---|---|---|---|---|
-   | 121914 | Dela Cruz, Juan | 8/1/2026 | TUESDAY | 10:20 | 12:40 | 13:12 | 17:00 | 17:30 | 21:00 |
-
-   Column names are matched by header text, so order doesn't matter and extra
-   columns are ignored. Merged/blank ID cells inherit from the row above.
+1. Click **Load Excel / CSV…** and pick the file. **You do not have to reformat
+   a client's DTR first** — each sheet is sniffed and read according to its own
+   shape (see *Messy client DTRs* below).
 
 2. The script reads the **access ID and name displayed on the page**, finds that
    guard in the file, and loads only their days. You'll see:
@@ -132,6 +126,52 @@ find and undo.
 
 For the same reason, the paste box is never carried from one employee's page to
 the next while a workbook is loaded.
+
+### Messy client DTRs
+
+Every sheet is classified before it's read, and the panel logs what it decided
+(`layout — Report: personnel report`). Five shapes are recognised:
+
+| Layout | Recognised by | Identity comes from |
+|---|---|---|
+| **column headers** | a header row naming Date + times **and** the guard | that row |
+| **personnel report** | `Personnel Name` / `DTR Summary Report`, `Time In 1..3` | the row |
+| **per-guard blocks** | `SECURITY GUARD:` / `ACCESS ID:` above each small table | the text above |
+| **day-number blocks** | `INNITIAL IN`, `L.B OUT`, `C.B OUT`, dates as 1–31 | name + month/year above |
+| **headerless columns** | name · date · weekday · six punches, no header at all | column A |
+
+A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
+**planned shifts, not punches**, and refused rather than imported.
+
+Messy cells are handled too: military integers (`1058`), military strings
+(`1053H`), Excel serials, real Date cells, `22;20` typed with a semicolon,
+`0UT` mis-typed for `OUT` in a header, and rest markers (`REST`, `NO DUTY`,
+`DAY OFF`, `RD`, `LEAVE`, `ABSENT`) which are counted and skipped rather than
+filled.
+
+**One guard split across two sheets gets merged.** If a report lists them by
+Access ID and a raw sheet lists them by name only, both sets of days end up on
+one person — but only when exactly one name matches, never on a tie. If the same
+day appears twice, the row with more punches wins and is flagged.
+
+### Overnight shifts
+
+A punch that falls *before* the one preceding it by more than six hours is taken
+to have crossed midnight, and is written to the **next day's date**. So a
+19:00 → 06:00 night shift fills as:
+
+```
+Time In    08/01/2026 07:00 PM
+Lunch Out  08/01/2026 11:00 PM
+Break Out  08/02/2026 02:00 AM   ← rolled
+Time Out   08/02/2026 06:00 AM   ← rolled
+```
+
+In the paste box these read `02:00+1`, so the offset stays visible and editable,
+and the run summary tells you how many punches were re-dated. Rows the importer
+distrusts — overnight, missing in/out, an odd number of punches, a span under 1h
+or over 16h, or hours that disagree with the sheet's own total by more than 1.5h
+— are listed per guard when you select them.
 
 ### Excel support
 

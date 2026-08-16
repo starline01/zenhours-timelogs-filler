@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.2.3
+// @version      1.3.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -203,43 +203,65 @@
      *   7:00 AM · 7:00am · 07:00 · 19:00 · 7 AM · 7pm · 1900 · 7.00 PM
      * Returns null when the field is blank / a placeholder / unparseable.
      */
+    /** A raw spreadsheet number: military integer (1058) or an Excel serial. */
+    function numberToTime(v) {
+        if (!isFinite(v)) return null;
+        if (Number.isInteger(v) && v >= 100 && v <= 2359 && v % 100 < 60 && Math.floor(v / 100) < 24) {
+            return { h: Math.floor(v / 100), m: v % 100, plus: 0 };     // 1058 -> 10:58
+        }
+        const mins = Math.round((v - Math.floor(v)) * 1440);            // fraction of a day
+        return { h: Math.floor(mins / 60) % 24, m: mins % 60, plus: 0 };
+    }
+
+    /**
+     * Parse a time into { h, m, plus }, where `plus` counts days past the row's
+     * own date — a night shift's 06:00 Time Out is { h:6, m:0, plus:1 }.
+     * Accepts 7:00 AM · 07:00 · 19:00 · 1900 · 1053H · 22;20 (typo) · 06:00+1,
+     * plus Date objects and raw Excel numbers straight from a cell.
+     */
     function parseTime(raw) {
+        if (raw instanceof Date && !isNaN(raw)) return { h: raw.getHours(), m: raw.getMinutes(), plus: 0 };
+        if (typeof raw === 'number') return numberToTime(raw);
+
         let s = norm(raw).toLowerCase();
         if (!s || isBlankText(s)) return null;
 
-        // Excel stores a time as a fraction of a day (0.4305… = 10:20), and a
-        // datetime as serial.fraction. Either arrives here when a cell has no
-        // display format for SheetJS to apply.
+        // "+1" suffix marks a punch belonging to the next day (overnight shift).
+        let plus = 0;
+        const plusMatch = s.match(/\+\s*(\d)\s*$/);
+        if (plusMatch) { plus = +plusMatch[1]; s = s.slice(0, plusMatch.index).trim(); }
+
         if (/^\d*\.\d+$/.test(s)) {
-            const frac = parseFloat(s) % 1;
-            const mins = Math.round(frac * 24 * 60);
-            return { h: Math.floor(mins / 60) % 24, m: mins % 60 };
+            const t = numberToTime(parseFloat(s));
+            return t ? { h: t.h, m: t.m, plus } : null;
         }
 
-        // Strip a leading date if the cell holds a full datetime ("08/01/2026 7:00 AM")
-        s = s.replace(/^\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}[t ]+/, '');
+        s = s.replace(/^\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}[t ]+/, '');  // drop a leading date
+        s = s.replace(/;/g, ':');                                        // "22;20" -> "22:20"
+        s = s.replace(/h$/i, '').trim();                                 // military "1053H"
 
         const ampmMatch = s.match(/([ap])\.?m\.?/);
         const ampm = ampmMatch ? ampmMatch[1] : null;
         s = s.replace(/([ap])\.?m\.?/, '').trim();
 
-        let h = null, m = 0;
-        let mt = s.match(/^(\d{1,2})\s*[:.h]\s*(\d{2})(?:\s*[:.]\s*\d{2})?$/);
-        if (mt) {
-            h = +mt[1]; m = +mt[2];
-        } else if ((mt = s.match(/^(\d{1,2})$/))) {
-            h = +mt[1]; m = 0;
-        } else if ((mt = s.match(/^(\d{3,4})$/))) {           // 700 / 1900 military
-            const n = mt[1];
-            h = +n.slice(0, n.length - 2); m = +n.slice(-2);
-        } else {
-            return null;
-        }
+        let h = null, m = 0, mt;
+        if ((mt = s.match(/^(\d{1,2})\s*[:.h]\s*(\d{2})(?:\s*[:.]\s*\d{2})?$/))) { h = +mt[1]; m = +mt[2]; }
+        else if ((mt = s.match(/^(\d{1,2})$/))) { h = +mt[1]; m = 0; }
+        else if ((mt = s.match(/^(\d{3,4})$/))) { const n = mt[1]; h = +n.slice(0, n.length - 2); m = +n.slice(-2); }
+        else return null;
 
         if (ampm === 'p' && h < 12) h += 12;
         if (ampm === 'a' && h === 12) h = 0;
         if (!(h >= 0 && h <= 23) || !(m >= 0 && m <= 59)) return null;
-        return { h, m };
+        return { h, m, plus };
+    }
+
+    /** ISO date shifted by n whole days. */
+    function addDays(iso, n) {
+        if (!n) return iso;
+        const [Y, M, D] = iso.split('-').map(Number);
+        const d = new Date(Date.UTC(Y, M - 1, D + n));
+        return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
     }
 
     const MONTHS = {
@@ -333,27 +355,31 @@
 
         let columnOrder = null;     // null = no header, map positionally after stripping labels
         let startIndex = 0;
+        let dateIndex = 0;          // which field holds the date
 
         // Header line? (first line has no parseable date but does name columns)
         const firstFields = splitFields(lines[0]);
         const headerHits = firstFields.map((f) => HEADER_ALIASES[normKey(f)]).filter(Boolean);
         if (!parseDate(firstFields[0], fallbackYear) && headerHits.length >= 2) {
-            // Align positionally; anything unrecognised (a "Day" column) becomes null.
-            columnOrder = firstFields.slice(1).map((f) => HEADER_ALIASES[normKey(f)] || null);
+            // Map by absolute position, so the date needn't be the first column —
+            // exports that lead with Guard / Access ID columns still line up.
+            columnOrder = firstFields.map((f) => HEADER_ALIASES[normKey(f)] || null);
+            const named = firstFields.findIndex((f) => DATE_ALIASES.has(normKey(f)));
+            dateIndex = named >= 0 ? named : 0;
             startIndex = 1;
-            out.mapping = columnOrder.map((c) => (c ? COLUMN_LABELS[c] : '(ignored)')).join(' · ');
+            out.mapping = columnOrder.map((c, i) => (c ? COLUMN_LABELS[c] : (i === dateIndex ? 'Date' : '(ignored)'))).join(' · ');
         }
 
         for (let i = startIndex; i < lines.length; i++) {
             const line = lines[i];
             const fields = splitFields(line);
-            const date = parseDate(fields[0], fallbackYear);
+            const date = parseDate(fields[dateIndex], fallbackYear);
             if (!date) {
                 out.warnings.push(`Line ${i + 1}: no date found — skipped ("${norm(line).slice(0, 48)}")`);
                 continue;
             }
 
-            let rest = fields.slice(1);
+            let rest = columnOrder ? fields : fields.slice(1);
             let order = columnOrder;
             const dropped = [];
 
@@ -379,8 +405,22 @@
                 if (!col) return;                                   // column mapped to nothing
                 if (norm(field) === '' || isBlankText(field)) { blanks.push(col); return; }
                 const t = parseTime(field);
-                if (t) times[col] = t;
-                else out.warnings.push(`Line ${i + 1}: could not read "${norm(field)}" as a time — ${COLUMN_LABELS[col]} skipped`);
+                if (!t) {
+                    out.warnings.push(`Line ${i + 1}: could not read "${norm(field)}" as a time — ${COLUMN_LABELS[col]} skipped`);
+                    return;
+                }
+                // A cell carrying its own full date ("2026/08/02 06:00", as an
+                // upstream exporter writes an overnight punch) states which day
+                // it belongs to — honour that instead of assuming the row's.
+                const stamped = String(field).trim();
+                if (/^\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}[T\s]/.test(stamped)) {
+                    const own = parseDate(stamped.split(/[T\s]+/)[0], fallbackYear);
+                    if (own && own !== date) {
+                        const days = Math.round((Date.parse(own) - Date.parse(date)) / 86400000);
+                        if (days > 0) t.plus = days;
+                    }
+                }
+                times[col] = t;
             });
 
             if (rest.length > order.length) {
@@ -728,6 +768,7 @@
     async function runFill(entries, opts, log) {
         undoStack = [];
         let filledRows = 0, filledFields = 0, missingRows = 0, skipped = 0, blanksLeft = 0;
+        let overnightFields = 0;
         let reportedStrategy = false;
 
         for (const entry of entries) {
@@ -795,13 +836,16 @@
                     parts.push(`${COLUMN_LABELS[col]}=kept`);
                     continue;
                 }
-                const value = buildValue(input, entry.date, t);
+                // An overnight punch belongs to a later date than the row's own.
+                const effectiveDate = addDays(entry.date, t.plus || 0);
+                const value = buildValue(input, effectiveDate, t);
                 undoStack.push({ input, previous: input.value });
                 setValue(input, value);
                 input.classList.add('zdf-touched');
                 touched++;
                 filledFields++;
-                parts.push(`${COLUMN_LABELS[col]}=${formatTimeLike('12:00 AM', t)}`);
+                if (t.plus) overnightFields++;
+                parts.push(`${COLUMN_LABELS[col]}=${formatTimeLike('12:00 AM', t)}${t.plus ? ` (+${t.plus}d → ${effectiveDate})` : ''}`);
             }
 
             if (touched) {
@@ -820,7 +864,7 @@
             await sleep(opts.delay);
         }
 
-        return { filledRows, filledFields, missingRows, skipped, blanksLeft };
+        return { filledRows, filledFields, missingRows, skipped, blanksLeft, overnightFields };
     }
 
     function undoFill(log) {
@@ -892,141 +936,574 @@
         catch (e) { return false; }          // quota — keep working from memory
     }
 
-    /** Locate the id / name / date / time columns in a sheet's header row. */
-    function detectSheetColumns(rows) {
-        for (let r = 0; r < Math.min(rows.length, 10); r++) {
-            const cells = rows[r].map((c) => normKey(c));
-            const cols = { idCol: -1, nameCol: -1, dateCol: -1, timeCols: {}, headerRow: r };
-            let hits = 0;
-            cells.forEach((cell, i) => {
-                if (!cell) return;
-                if (cols.idCol < 0 && EMPID_ALIASES.has(cell)) { cols.idCol = i; hits++; return; }
-                if (cols.nameCol < 0 && NAME_ALIASES.has(cell)) { cols.nameCol = i; hits++; return; }
-                if (cols.dateCol < 0 && DATE_ALIASES.has(cell)) { cols.dateCol = i; hits++; return; }
-                if (DAY_ALIASES.has(cell)) return;                 // day-of-week, ignored
-                const col = HEADER_ALIASES[cell];
-                if (col && cols.timeCols[col] === undefined) { cols.timeCols[col] = i; hits++; }
-            });
-            // A usable header needs a date column and at least two time columns.
-            if (cols.dateCol >= 0 && Object.keys(cols.timeCols).length >= 2 && hits >= 3) return cols;
+    // ── Reading messy client DTRs ────────────────────────────────────────
+    //  Client spreadsheets arrive in whatever shape the site made them. Rather
+    //  than demand one layout, sniff which of several known shapes a sheet is
+    //  and parse accordingly. Cells are read RAW (numbers, Dates) so military
+    //  integers and Excel serials survive.
+
+    const MONTH_NAMES = {
+        jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+        jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+    };
+
+    /** Raw value of one cell, or null. */
+    function cellAt(ws, r, c) {
+        if (c == null || c < 0) return null;
+        const x = ws[XLSX.utils.encode_cell({ r, c })];
+        return x ? x.v : null;
+    }
+    const sheetRange = (ws) => XLSX.utils.decode_range(ws['!ref']);
+    const cellText = (ws, r, c) => norm(cellAt(ws, r, c));
+    const upper = (s) => String(s == null ? '' : s).toUpperCase().replace(/\s+/g, ' ').trim();
+
+    const ROLL_HOURS = 6;    // a backward jump this large means the clock crossed midnight
+
+    /**
+     * Turn six raw punches into { times, flags }, rolling each punch onto the
+     * next day when it falls before the previous one — this is what makes a
+     * night shift's Time Out land on the correct date.
+     */
+    function sequencePunches(raw) {
+        const times = {};
+        let prevAbs = null, overnight = false, outOfOrder = false, present = 0;
+
+        for (const col of COLUMNS) {
+            const t = raw[col];
+            if (!t) continue;
+            present++;
+            let abs = t.h * 60 + t.m;
+            let plus = 0;
+            if (prevAbs !== null && abs < prevAbs) {
+                if (prevAbs - abs >= ROLL_HOURS * 60) {
+                    while (abs < prevAbs) { abs += 1440; plus++; }
+                    overnight = true;
+                } else {
+                    outOfOrder = true;
+                }
+            }
+            times[col] = { h: t.h, m: t.m, plus };
+            if (prevAbs === null || abs > prevAbs) prevAbs = abs;
+        }
+
+        const flags = [];
+        if (overnight) flags.push('overnight');
+        if (outOfOrder) flags.push('out-of-order punch');
+        if (present > 0 && (!times.time_in || !times.time_out)) flags.push('missing in/out');
+        if (present % 2 !== 0) flags.push('unpaired punch');
+        return { times, flags, present };
+    }
+
+    /** Hours as written in the sheet's own total column, for cross-checking. */
+    function statedHours(v) {
+        if (v == null) return null;
+        if (v instanceof Date) return v.getHours() + v.getMinutes() / 60;   // duration on the 1899 epoch
+        if (typeof v === 'number') { if (v > 0 && v <= 1) return v * 24; if (v > 1 && v < 48) return v; return null; }
+        const m = String(v).match(/(\d+(?:\.\d+)?)/);                        // "13HRS" -> 13
+        return m ? parseFloat(m[1]) : null;
+    }
+
+    /** Compare the punches we read against the hours the sheet claims. */
+    function reconcile(row) {
+        if (row.rest) return row;
+        const mins = (t) => t ? (t.h * 60 + t.m + t.plus * 1440) : null;
+        const tin = mins(row.times.time_in), tout = mins(row.times.time_out);
+        if (tin != null && tout != null) {
+            let gross = (tout - tin) / 60;
+            let brk = 0;
+            const lo = mins(row.times.lunch_out), li = mins(row.times.lunch_in);
+            const bo = mins(row.times.break_out), bi = mins(row.times.break_in);
+            if (lo != null && li != null) brk += (li - lo) / 60;
+            if (bo != null && bi != null) brk += (bi - bo) / 60;
+            row.computedHours = Math.round(gross * 10) / 10;
+            const sh = row.statedHours;
+            if (sh != null && sh > 0 && (sh < gross - brk - 1.5 || sh > gross + 1.5)) {
+                row.flags.push(`hours off: sheet says ${sh}, punches give ~${row.computedHours}`);
+            }
+            if ((gross < 1 || gross > 16) && !row.flags.some((f) => /hours off/.test(f))) {
+                row.flags.push(`check span ~${row.computedHours}h`);
+            }
+        }
+        return row;
+    }
+
+    const REST_RE = /REST|NO ?DUTY|DAY ?OFF|\bRD\b|OFF\b|LEAVE|ABSENT|VACATION|\bVL\b|\bSL\b/i;
+
+    /** One canonical day row. */
+    function makeRow(id, name, date, rawTimes, sheetTotal, extraFlags) {
+        const seq = sequencePunches(rawTimes);
+        const row = {
+            id: String(id || '').replace(/^'/, '').trim(),
+            name: norm(name),
+            date,
+            times: seq.times,
+            blanks: COLUMNS.filter((c) => !seq.times[c]),
+            flags: (extraFlags || []).concat(seq.flags),
+            statedHours: statedHours(sheetTotal),
+            rest: false
+        };
+        return reconcile(row);
+    }
+    function makeRestRow(id, name, date, reason) {
+        return { id: String(id || '').trim(), name: norm(name), date, times: {}, blanks: [], flags: [reason], rest: true };
+    }
+
+    // ── Layout A: flat report — "Personnel Name" + "Time In 1..3" ────────
+    function parseFlatReport(ws) {
+        const rng = sheetRange(ws);
+        const nz = (s) => upper(s).replace(/0UT/g, 'OUT');       // OCR'd "0UT" -> "OUT"
+        const NAMEH = ['PERSONNEL NAME', 'EMPLOYEE NAME', 'NAME OF EMPLOYEE'];
+
+        let hr = -1;
+        for (let r = rng.s.r; r <= rng.e.r && hr < 0; r++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                if (NAMEH.includes(nz(cellAt(ws, r, c)))) { hr = r; break; }
+            }
+        }
+        if (hr < 0) return [];
+
+        const col = {};
+        for (let c = rng.s.c; c <= rng.e.c; c++) {
+            const k = nz(cellAt(ws, hr, c));
+            if (k && col[k] == null) col[k] = c;
+        }
+        const pick = (names) => { for (const n of names) if (col[n] != null) return col[n]; return null; };
+        const cName = pick(NAMEH);
+        const cDate = pick(['TRANSACTION DATE', 'DATE', 'LOG DATE']);
+        const cId = pick(['ACCESS ID', 'ACCESS ID #', 'EMPLOYEE ID', 'EMP ID']);
+        const cHours = pick(['NET HOURS RENDERED', 'GROSS HOURS RENDERED', 'NO. OF HOURS RENDERED',
+            'NO. OF HOURS', 'TOTAL HOURS', 'HRS RENDERED']);
+        const map = {
+            time_in: pick(['TIME IN 1', 'FIRST TIME IN', 'TIME IN']),
+            lunch_out: pick(['TIME OUT 1', 'BREAK OUT 1', 'LUNCH OUT']),
+            lunch_in: pick(['TIME IN 2', 'BREAK IN 1', 'LUNCH IN']),
+            break_out: pick(['TIME OUT 2', 'BREAK OUT 2', 'BREAK OUT']),
+            break_in: pick(['TIME IN 3', 'BREAK IN 2', 'BREAK IN']),
+            time_out: pick(['TIME OUT 3', 'LAST TIME OUT', 'TIME OUT'])
+        };
+        if (cDate == null) return [];
+
+        const out = [];
+        for (let r = hr + 1; r <= rng.e.r; r++) {
+            const name = cellAt(ws, r, cName);
+            const date = parseDate(cellAt(ws, r, cDate), null);
+            if (!name || !date) continue;
+            const raw = {};
+            for (const c of COLUMNS) raw[c] = parseTime(cellAt(ws, r, map[c]));
+            const id = cellAt(ws, r, cId);
+            if (!COLUMNS.some((c) => raw[c])) {
+                const marker = upper(cellAt(ws, r, map.time_in));
+                out.push(makeRestRow(id, name, date, REST_RE.test(marker) ? 'rest day' : (marker.toLowerCase() || 'no punches')));
+                continue;
+            }
+            out.push(makeRow(id, name, date, raw, cellAt(ws, r, cHours), []));
+        }
+        return out;
+    }
+
+    // ── Layout B: stacked blocks — "SECURITY GUARD: ..." above each table ─
+    const STACK_HEADERS = {
+        'DATE': 'date', 'SCHEDULE': 'schedule', 'SCHED': 'schedule',
+        'TIME IN': 'time_in', 'INITIAL IN': 'time_in',
+        'LUNCH OUT': 'lunch_out', 'LUCH OUT': 'lunch_out', 'LB OUT': 'lunch_out', 'L.B OUT': 'lunch_out',
+        'LUNCH IN': 'lunch_in', 'LB IN': 'lunch_in', 'L.B IN': 'lunch_in',
+        'BREAK OUT': 'break_out', 'CB OUT': 'break_out', 'C.B OUT': 'break_out',
+        'BREAK IN': 'break_in', 'CB IN': 'break_in', 'C.B IN': 'break_in',
+        'TIME OUT': 'time_out', 'FINAL OUT': 'time_out',
+        'HOURS DUTY': 'hours', 'HRS RENDERED': 'hours', 'NO. OF HOURS': 'hours',
+        'NO. OF HOURS RENDERED': 'hours', 'TOTAL HOURS': 'hours', 'NET HOURS': 'hours',
+        'NET HOURS RENDERED': 'hours'
+    };
+    const NAME_LABEL = /^\s*(NAME OF (?:GUARD|SECURITY|OFFICER)|SECURITY GUARD|LADY GUARD|LADY GUAR|OFFICER|GUARD NAME|GUARD|NAME)\s*[:.]?\s*(.*)$/i;
+    const RANK_PREFIX = /^(SO|SG|LG|SSG|PO|OIC|SIC|SOI)\.?\s+/;
+
+    function parseStackedBlocks(ws, sheetName) {
+        const rng = sheetRange(ws);
+        const anchors = [];
+        for (let r = rng.s.r; r <= rng.e.r; r++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                if (/TIME IN|INN?ITIAL IN/i.test(String(cellAt(ws, r, c) || ''))) { anchors.push(r); break; }
+            }
+        }
+        const clean = (x) => norm(x).replace(/^[.:,\-\s]+/, '').replace(RANK_PREFIX, '');
+        const out = [];
+
+        anchors.forEach((hr, bi) => {
+            const map = {};
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = cellAt(ws, hr, c);
+                if (typeof v === 'string' && STACK_HEADERS[upper(v)]) map[STACK_HEADERS[upper(v)]] = c;
+            }
+            if (map.date == null) return;
+
+            // Name and Access ID sit in the few rows above the header.
+            let id = '', guard = '';
+            for (let up = 1; up <= 4 && hr - up >= 0 && !id; up++) {
+                for (let c = rng.s.c; c <= rng.e.c; c++) {
+                    if (!/ACCESS ID|EMPLOYEE ID/i.test(String(cellAt(ws, hr - up, c) || ''))) continue;
+                    for (let cc = c; cc <= rng.e.c; cc++) {
+                        const nv = cellAt(ws, hr - up, cc);
+                        if (typeof nv === 'number' || (typeof nv === 'string' && /^'?0*\d{3,}$/.test(String(nv).trim()))) {
+                            id = String(nv).replace(/^'/, '').trim(); break;
+                        }
+                    }
+                }
+            }
+            for (let up = 1; up <= 4 && hr - up >= 0 && !guard; up++) {
+                for (let c = rng.s.c; c <= rng.e.c; c++) {
+                    const v = cellAt(ws, hr - up, c);
+                    if (typeof v !== 'string') continue;
+                    const m = v.match(NAME_LABEL);
+                    if (m && /[A-Za-z]{2}/.test(m[2] || '')) { guard = clean(m[2]); break; }
+                    if (m) {                                     // label alone; value is to its right
+                        for (let cc = c + 1; cc <= rng.e.c; cc++) {
+                            const nv = cellAt(ws, hr - up, cc);
+                            if (nv != null && String(nv).trim()) { guard = clean(String(nv)); break; }
+                        }
+                        if (guard) break;
+                    }
+                }
+            }
+            if (!guard && sheetName && !/^sheet\d*$/i.test(String(sheetName).trim())) guard = clean(sheetName);
+
+            const end = bi + 1 < anchors.length ? anchors[bi + 1] : rng.e.r + 1;
+            for (let r = hr + 1; r < end; r++) {
+                const date = parseDate(cellAt(ws, r, map.date), null);
+                if (!date) continue;
+                const sched = String(cellAt(ws, r, map.schedule) || '');
+                const raw = {};
+                for (const c of COLUMNS) raw[c] = map[c] != null ? parseTime(cellAt(ws, r, map[c])) : null;
+                if (!COLUMNS.some((c) => raw[c]) || REST_RE.test(sched)) {
+                    out.push(makeRestRow(id, guard, date, 'rest day'));
+                    continue;
+                }
+                out.push(makeRow(id, guard, date, raw, map.hours != null ? cellAt(ws, r, map.hours) : null, []));
+            }
+        });
+        return out;
+    }
+
+    // ── Layout C: day-number dates, month/year floating above the table ───
+    const SKIP_TEXT = /STARLINE|SECURITY|AGENCY|CUT ?OFF|^DATE$|^\d+$|JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER/i;
+
+    function monthYearAbove(ws, r, rng) {
+        for (let up = 1; up <= 8 && r - up >= 0; up++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = String(cellAt(ws, r - up, c) || '');
+                const mm = v.toUpperCase().match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/);
+                if (mm) {
+                    const yy = v.match(/(20\d\d)/);
+                    return { mo: MONTH_NAMES[mm[1].toLowerCase()], year: yy ? +yy[1] : null };
+                }
+            }
+        }
+        return { mo: null, year: null };
+    }
+    function nameAbove(ws, r, rng) {
+        for (let up = 1; up <= 4 && r - up >= 0; up++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = cellAt(ws, r - up, c);
+                if (typeof v === 'string' && v.trim() && !SKIP_TEXT.test(v.trim())) return norm(v.split('/')[0]);
+            }
+        }
+        return '';
+    }
+    function parseDayNumberBlocks(ws, fallbackYear) {
+        const rng = sheetRange(ws);
+        const out = [];
+        for (let r = rng.s.r; r <= rng.e.r; r++) {
+            let isHeader = false;
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                if (/INN?ITIAL IN/i.test(String(cellAt(ws, r, c) || ''))) { isHeader = true; break; }
+            }
+            if (!isHeader) continue;
+
+            const map = {};
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = cellAt(ws, r, c);
+                if (typeof v !== 'string') continue;
+                const key = upper(v).replace(/^INNITIAL IN$/, 'INITIAL IN');
+                if (STACK_HEADERS[key]) map[STACK_HEADERS[key]] = c;
+            }
+            if (map.date == null) continue;
+
+            const my = monthYearAbove(ws, r, rng);
+            const guard = nameAbove(ws, r, rng);
+            const year = my.year || fallbackYear || new Date().getFullYear();
+            const yearFlags = my.year ? [] : ['year assumed ' + year];
+
+            for (let d = r + 1; d <= rng.e.r; d++) {
+                const dv = cellAt(ws, d, map.date);
+                if (typeof dv !== 'number' || dv < 1 || dv > 31) {
+                    if (dv == null) continue;
+                    break;                                       // next block, or end of this one
+                }
+                const date = `${year}-${pad2(my.mo || 1)}-${pad2(dv)}`;
+                const inCell = cellAt(ws, d, map.time_in);
+                if (typeof inCell === 'string' && REST_RE.test(inCell)) {
+                    out.push(makeRestRow('', guard, date, 'rest day'));
+                    continue;
+                }
+                const raw = {};
+                for (const c of COLUMNS) raw[c] = map[c] != null ? parseTime(cellAt(ws, d, map[c])) : null;
+                if (!COLUMNS.some((c) => raw[c])) { out.push(makeRestRow('', guard, date, 'no punches')); continue; }
+                out.push(makeRow('', guard, date, raw, map.hours != null ? cellAt(ws, d, map.hours) : null, yearFlags));
+            }
+        }
+        return out;
+    }
+
+    // ── Layout D: headerless — name · date · weekday · six punches ───────
+    const WEEKDAY_RE = /^(SUN|MON|TUE|WED|THU|FRI|SAT)/i;
+    function looksPositional(ws) {
+        const rng = sheetRange(ws);
+        let hits = 0;
+        for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 40); r++) {
+            const a = cellAt(ws, r, rng.s.c), b = cellAt(ws, r, rng.s.c + 1), c = cellAt(ws, r, rng.s.c + 2);
+            if (typeof a === 'string' && a.trim() && parseDate(b, null) && typeof c === 'string' && WEEKDAY_RE.test(c.trim())) hits++;
+        }
+        return hits >= 3;
+    }
+    function parsePositional(ws) {
+        const rng = sheetRange(ws);
+        const c0 = rng.s.c;
+        const out = [];
+        for (let r = rng.s.r; r <= rng.e.r; r++) {
+            const name = cellAt(ws, r, c0);
+            const date = parseDate(cellAt(ws, r, c0 + 1), null);
+            if (typeof name !== 'string' || !name.trim() || !date) continue;
+            const first = cellAt(ws, r, c0 + 3);
+            if (typeof first === 'string' && REST_RE.test(first)) {
+                out.push(makeRestRow('', name, date, 'rest day'));
+                continue;
+            }
+            const raw = {};
+            COLUMNS.forEach((c, i) => { raw[c] = parseTime(cellAt(ws, r, c0 + 3 + i)); });
+            if (!COLUMNS.some((c) => raw[c])) { out.push(makeRestRow('', name, date, 'no punches')); continue; }
+            out.push(makeRow('', name, date, raw, null, []));
+        }
+        return out;
+    }
+
+    // ── Layout E: our own template / any sheet with a named header row ────
+    function detectTableColumns(ws) {
+        const rng = sheetRange(ws);
+        for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 12); r++) {
+            const cols = { idCol: -1, nameCol: -1, dateCol: -1, hoursCol: -1, timeCols: {}, headerRow: r };
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const key = normKey(cellAt(ws, r, c));
+                if (!key) continue;
+                if (cols.idCol < 0 && EMPID_ALIASES.has(key)) { cols.idCol = c; continue; }
+                if (cols.nameCol < 0 && NAME_ALIASES.has(key)) { cols.nameCol = c; continue; }
+                if (cols.dateCol < 0 && DATE_ALIASES.has(key)) { cols.dateCol = c; continue; }
+                if (DAY_ALIASES.has(key)) continue;
+                const col = HEADER_ALIASES[key];
+                if (col && cols.timeCols[col] === undefined) cols.timeCols[col] = c;
+            }
+            // Claim the sheet only when it identifies the guard on the row itself.
+            // Without that, identity lives in text around the table — which is
+            // the stacked / day-number layouts' job, not this one.
+            const identified = cols.idCol >= 0 || cols.nameCol >= 0;
+            if (identified && cols.dateCol >= 0 && Object.keys(cols.timeCols).length >= 2) return cols;
         }
         return null;
     }
+    function parseTable(ws, cols, sheetName) {
+        const rng = sheetRange(ws);
+        const out = [];
+        let lastId = '', lastName = '';
+        for (let r = cols.headerRow + 1; r <= rng.e.r; r++) {
+            const date = parseDate(cellAt(ws, r, cols.dateCol), new Date().getFullYear());
+            if (!date) continue;
+            const id = cols.idCol >= 0 ? (norm(cellAt(ws, r, cols.idCol)) || lastId) : '';
+            const nm = cols.nameCol >= 0 ? (norm(cellAt(ws, r, cols.nameCol)) || lastName) : '';
+            lastId = id; lastName = nm;
+            if (!id && !nm && !sheetName) continue;
 
-    /** Fallback when a sheet has no recognisable header: assume the sample layout. */
-    function positionalColumns(rows) {
-        const first = rows.find((r) => r.some((c) => parseDate(c, null)));
-        if (!first) return null;
-        const dateCol = first.findIndex((c) => parseDate(c, null));
-        if (dateCol < 0) return null;
-        // Times are the trailing cells; id/name are whatever sits before the date.
-        const cols = { idCol: -1, nameCol: -1, dateCol, timeCols: {}, headerRow: -1 };
-        for (let i = 0; i < dateCol; i++) {
-            const v = norm(first[i]);
-            if (!v) continue;
-            if (/^\d+$/.test(v) && cols.idCol < 0) cols.idCol = i;
-            else if (cols.nameCol < 0 && /[a-z]/i.test(v)) cols.nameCol = i;
+            const raw = {};
+            for (const c of COLUMNS) raw[c] = cols.timeCols[c] != null ? parseTime(cellAt(ws, r, cols.timeCols[c])) : null;
+            if (!COLUMNS.some((c) => raw[c])) {
+                const marker = upper(cellAt(ws, r, cols.timeCols.time_in));
+                if (marker && REST_RE.test(marker)) { out.push(makeRestRow(id, nm || sheetName, date, 'rest day')); }
+                continue;                                        // otherwise just an empty day
+            }
+            out.push(makeRow(id, nm || sheetName, date, raw,
+                cols.hoursCol >= 0 ? cellAt(ws, r, cols.hoursCol) : null, []));
         }
-        let seen = 0;
-        for (let i = dateCol + 1; i < first.length && seen < COLUMNS.length; i++) {
-            if (DAY_NAMES.has(normKey(first[i]))) continue;        // skip the day name
-            cols.timeCols[COLUMNS[seen++]] = i;
+        return out;
+    }
+
+    // ── The router ───────────────────────────────────────────────────────
+    function classifySheet(ws) {
+        if (!ws || !ws['!ref']) return 'empty';
+        const rng = sheetRange(ws);
+        const lastRow = Math.min(rng.e.r, rng.s.r + 60);
+        for (let r = rng.s.r; r <= lastRow; r++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = String(cellAt(ws, r, c) || '');
+                if (/SCHEDULE_START_DATE|SCHEDULE_END_DATE|ACTUAL SCHEDULE OF GUARDS/i.test(v)) return 'schedule';
+            }
         }
-        return Object.keys(cols.timeCols).length >= 2 ? cols : null;
+        if (detectTableColumns(ws)) return 'table';
+        for (let r = rng.s.r; r <= lastRow; r++) {
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = String(cellAt(ws, r, c) || '');
+                if (/Personnel Name|Employee Name|DTR Summary Report/i.test(v)) return 'flat';
+                if (/INN?ITIAL IN/i.test(v)) return 'daynumber';
+                if (/SECURITY GUARD\s*:|LADY GUARD\s*:|NAME OF GUARD/i.test(v) || /^\s*TIME\s*IN\s*$/i.test(v)) return 'stacked';
+            }
+        }
+        if (looksPositional(ws)) return 'positional';
+        return 'unknown';
+    }
+
+    function parseSheet(ws, sheetName, fallbackYear) {
+        const format = classifySheet(ws);
+        let rows = [];
+        if (format === 'table') rows = parseTable(ws, detectTableColumns(ws), sheetName);
+        else if (format === 'flat') rows = parseFlatReport(ws);
+        else if (format === 'stacked') rows = parseStackedBlocks(ws, sheetName);
+        else if (format === 'daynumber') rows = parseDayNumberBlocks(ws, fallbackYear);
+        else if (format === 'positional') rows = parsePositional(ws);
+        return { format, rows };
+    }
+
+    const FORMAT_LABELS = {
+        table: 'column headers', flat: 'personnel report', stacked: 'per-guard blocks',
+        daynumber: 'day-number blocks', positional: 'headerless columns',
+        schedule: 'schedule (not punches)', unknown: 'unrecognised', empty: 'empty'
+    };
+
+    const nameTokens = (s) => new Set(normKey(s).split(' ').filter(Boolean));
+
+    /**
+     * One guard can appear in two sheets — with an access ID in a report and by
+     * name only in a raw sheet — which would otherwise leave them split across
+     * two roster entries, each holding half their month. Fold the name-only
+     * entry into the ID'd one when exactly one name matches; never on a tie.
+     */
+    function consolidateByName(employees, warnings) {
+        const withId = Array.from(employees.values()).filter((e) => e.id);
+        const merged = [];
+        for (const emp of Array.from(employees.values())) {
+            if (emp.id) continue;
+            const t = nameTokens(emp.name || emp.key);
+            if (!t.size) continue;
+            const hits = withId.filter((o) => {
+                const ot = nameTokens(o.name);
+                return ot.size === t.size && [...t].every((x) => ot.has(x));
+            });
+            if (hits.length !== 1) continue;              // no match, or ambiguous — leave it alone
+            hits[0].rows = hits[0].rows.concat(emp.rows);
+            employees.delete(emp.key);
+            merged.push(`${emp.name || emp.key} → #${hits[0].id}`);
+        }
+        if (merged.length) {
+            warnings.push(`Same guard found under both a name and an ID — merged: ${merged.join(', ')}`);
+        }
     }
 
     /**
-     * Turn sheet rows (arrays of cells) into per-employee day entries.
-     * Employees are keyed by access ID when the file has one, else by name.
+     * Two sheets can both carry the same day for the same guard. Keep whichever
+     * row has more punches and flag it, rather than silently importing one.
+     */
+    function dedupeDays(rows) {
+        const byDate = new Map();
+        const score = (r) => (r.rest ? -1 : Object.keys(r.times).length);
+        for (const row of rows) {
+            const prev = byDate.get(row.date);
+            if (!prev) { byDate.set(row.date, row); continue; }
+            const keep = score(row) > score(prev) ? row : prev;
+            keep.flags = (keep.flags || []).concat('same day appears twice in the file');
+            byDate.set(row.date, keep);
+        }
+        return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    /**
+     * Group parsed day rows into employees. Keyed by access ID when the file
+     * has one, else by name — matching how the page is matched later.
      */
     function buildRoster(sheets, sourceName) {
         const employees = new Map();
         const warnings = [];
-        let totalRows = 0;
+        const formats = [];
+        let totalRows = 0, restRows = 0, flaggedRows = 0;
 
-        for (const { name: sheetName, rows } of sheets) {
-            if (!rows || !rows.length) continue;
-            // Documentation tabs are expected in the template — skip them quietly.
+        for (const { name: sheetName, ws } of sheets) {
+            if (!ws) continue;
             if (/^\s*(read\s*me|readme|instructions?|notes?|guide|help|legend)\s*$/i.test(sheetName)) continue;
-            const cols = detectSheetColumns(rows) || positionalColumns(rows);
-            if (!cols) { warnings.push(`Sheet "${sheetName}": no date + time columns found — skipped`); continue; }
 
-            const fallbackYear = new Date().getFullYear();
-            let lastId = '', lastName = '';
+            let parsed;
+            try { parsed = parseSheet(ws, sheetName, null); }
+            catch (err) { warnings.push(`Sheet "${sheetName}": ${err && err.message ? err.message : 'could not be read'}`); continue; }
 
-            for (let r = cols.headerRow + 1; r < rows.length; r++) {
-                const cells = rows[r];
-                if (!cells || !cells.length) continue;
-
-                const date = parseDate(cells[cols.dateCol], fallbackYear);
-                if (!date) continue;                                // spacer / subtotal row
-
-                // Merged cells leave the id/name blank on continuation rows.
-                const id = cols.idCol >= 0 ? (norm(cells[cols.idCol]) || lastId) : '';
-                const nm = cols.nameCol >= 0 ? (norm(cells[cols.nameCol]) || lastName) : '';
-                lastId = id; lastName = nm;
-
-                const key = id || nm || sheetName;
-                if (!key) continue;
-
-                const times = {}, blanks = [];
-                for (const col of COLUMNS) {
-                    const idx = cols.timeCols[col];
-                    if (idx === undefined) continue;
-                    const cell = cells[idx];
-                    if (norm(cell) === '' || isBlankText(cell)) { blanks.push(col); continue; }
-                    const t = parseTime(cell);
-                    if (t) times[col] = t;
-                    else warnings.push(`${key} ${date}: could not read "${norm(cell)}" as a time`);
+            if (parsed.format === 'schedule') {
+                warnings.push(`Sheet "${sheetName}" is a schedule of planned shifts, not actual punches — skipped`);
+                continue;
+            }
+            if (!parsed.rows.length) {
+                if (parsed.format !== 'empty') {
+                    warnings.push(`Sheet "${sheetName}": ${FORMAT_LABELS[parsed.format] || parsed.format} — no day rows found`);
                 }
-                if (!Object.keys(times).length) continue;
+                continue;
+            }
+            formats.push(`${sheetName}: ${FORMAT_LABELS[parsed.format]}`);
 
-                if (!employees.has(key)) employees.set(key, { key, id, name: nm, rows: [] });
+            for (const row of parsed.rows) {
+                const key = row.id || row.name || sheetName;
+                if (!key) continue;
+                if (!employees.has(key)) employees.set(key, { key, id: row.id, name: row.name, rows: [] });
                 const emp = employees.get(key);
-                if (!emp.name && nm) emp.name = nm;
-                if (!emp.id && id) emp.id = id;
-                emp.rows.push({ date, times, blanks });
-                totalRows++;
+                if (!emp.name && row.name) emp.name = row.name;
+                if (!emp.id && row.id) emp.id = row.id;
+                emp.rows.push(row);
             }
         }
 
-        for (const emp of employees.values()) emp.rows.sort((a, b) => a.date.localeCompare(b.date));
+        consolidateByName(employees, warnings);
+
+        for (const emp of employees.values()) {
+            emp.rows = dedupeDays(emp.rows);
+            for (const row of emp.rows) {
+                if (row.rest) restRows++;
+                else { totalRows++; if (row.flags.length) flaggedRows++; }
+            }
+        }
+
         return {
             source: sourceName,
             loadedAt: Date.now(),
             employees: Array.from(employees.values())
                 .sort((a, b) => (a.name || a.key).localeCompare(b.name || b.key)),
-            totalRows,
-            warnings
+            totalRows, restRows, flaggedRows, formats, warnings
         };
     }
 
-    /** Read an .xlsx/.xls/.csv File into sheets of raw cell arrays. */
+    /** Read an .xlsx/.xls/.csv File into worksheets the parsers can walk. */
     function readWorkbook(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onerror = () => reject(new Error('could not read the file'));
-
             const isCsv = /\.csv$/i.test(file.name);
+
             reader.onload = () => {
                 try {
+                    if (typeof XLSX === 'undefined') {
+                        reject(new Error('the spreadsheet library did not load — check your connection and reload the page'));
+                        return;
+                    }
                     if (isCsv) {
                         const rows = String(reader.result).split(/\r?\n/)
                             .filter((l) => norm(l) !== '')
                             .map((l) => splitFields(l));
-                        resolve([{ name: file.name, rows }]);
+                        resolve([{ name: file.name, ws: XLSX.utils.aoa_to_sheet(rows) }]);
                         return;
                     }
-                    if (typeof XLSX === 'undefined') {
-                        reject(new Error('the Excel library did not load — save the file as CSV and try again'));
-                        return;
-                    }
+                    // cellDates keeps real times as Date objects; raw values are
+                    // read straight from each cell so serials survive intact.
                     const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array', cellDates: true });
-                    resolve(wb.SheetNames.map((name) => ({
-                        name,
-                        // header:1 → arrays of cells; raw:false → use each cell's displayed text
-                        rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' })
-                    })));
+                    resolve(wb.SheetNames.map((name) => ({ name, ws: wb.Sheets[name] })));
                 } catch (err) { reject(err); }
             };
 
@@ -1092,12 +1569,17 @@
         return { employee: best.emp, reason: best.why.join(' + ') };
     }
 
-    /** Render an employee's days into the paste box, reusing the normal flow. */
+    /**
+     * Render an employee's days into the paste box, reusing the normal flow.
+     * A punch that rolled past midnight is written "06:00+1" so the offset
+     * survives the round trip through the text box and stays visible to you.
+     */
     function employeeToText(emp) {
-        return emp.rows.map((row) => {
+        return emp.rows.filter((row) => !row.rest).map((row) => {
             const cells = COLUMNS.map((col) => {
                 const t = row.times[col];
-                return t ? `${pad2(t.h)}:${pad2(t.m)}` : '-';
+                if (!t) return '-';
+                return `${pad2(t.h)}:${pad2(t.m)}${t.plus ? '+' + t.plus : ''}`;
             });
             return [row.date].concat(cells).join('\t');
         }).join('\n');
@@ -1308,9 +1790,11 @@
             if (match) {
                 empSelect.value = match.employee.key;
                 matchBox.className = 'hit';
+                const workDays = match.employee.rows.filter((r) => !r.rest).length;
                 matchBox.textContent = `Matched this page by ${match.reason} → ${match.employee.name || match.employee.key}`
-                    + ` (${match.employee.rows.length} days loaded)`;
+                    + ` (${workDays} days loaded)`;
                 loadSelectedIntoBox(false);
+                reportEmployeeRows(match.employee);
             } else if (autoMatch) {
                 empSelect.value = '';
                 $id('zdf-paste').value = '';        // never leave another guard's times sitting here
@@ -1336,7 +1820,12 @@
                 if (!writeStore(ROSTER_KEY, roster)) {
                     log('File is too large to remember between pages — it stays loaded for this page only.', 'warn');
                 }
-                log(`Loaded ${roster.employees.length} employees, ${roster.totalRows} day rows.`, 'ok');
+                log(`Loaded ${roster.employees.length} employees, ${roster.totalRows} day rows`
+                    + (roster.restRows ? `, ${roster.restRows} rest/leave days skipped` : '') + '.', 'ok');
+                (roster.formats || []).slice(0, 8).forEach((f) => log('  layout — ' + f, 'info'));
+                if (roster.flaggedRows) {
+                    log(`${roster.flaggedRows} day row(s) need a look — select an employee to see theirs.`, 'warn');
+                }
                 roster.warnings.slice(0, 6).forEach((w) => log('! ' + w, 'warn'));
                 if (roster.warnings.length > 6) log(`! …and ${roster.warnings.length - 6} more warnings.`, 'warn');
                 renderRoster(true);
@@ -1354,8 +1843,19 @@
             matchBox.className = 'hit';
             matchBox.textContent = `${emp.name || emp.key} — ${emp.rows.length} days loaded into the box below.`;
             loadSelectedIntoBox(true);        // remember: you told us who this page is
-            log(`Selected ${emp.name || emp.key}${emp.id ? ` (#${emp.id})` : ''} — ${emp.rows.length} days.`, 'info');
+            reportEmployeeRows(emp);
         });
+
+        /** Say what was read for this guard, and which days the importer distrusts. */
+        function reportEmployeeRows(emp) {
+            const work = emp.rows.filter((r) => !r.rest);
+            const rest = emp.rows.length - work.length;
+            log(`Selected ${emp.name || emp.key}${emp.id ? ` (#${emp.id})` : ''} — ${work.length} day(s)`
+                + (rest ? `, ${rest} rest/leave day(s) not loaded` : '') + '.', 'info');
+            const flagged = work.filter((r) => r.flags && r.flags.length);
+            flagged.slice(0, 8).forEach((r) => log(`  ! ${r.date} — ${r.flags.join('; ')}`, 'warn'));
+            if (flagged.length > 8) log(`  ! …and ${flagged.length - 8} more day(s) worth checking.`, 'warn');
+        }
 
         $id('zdf-forget').addEventListener('click', () => {
             roster = null;
@@ -1432,6 +1932,9 @@
                     (r.skipped ? `, ${r.skipped} kept (already had a value)` : '') +
                     (r.blanksLeft ? `, ${r.blanksLeft} left at 12:00 AM (blank in your paste)` : '') +
                     (r.missingRows ? `, ${r.missingRows} row(s) not filled` : '') + '.', 'ok');
+                if (r.overnightFields) {
+                    log(`${r.overnightFields} overnight punch(es) were dated to the following day — check those rows before saving.`, 'warn');
+                }
                 log('Nothing was saved — review the highlighted inputs, then click Save on each row.', 'info');
                 status(`Filled ${r.filledRows} row(s). Click Save yourself.`);
 
