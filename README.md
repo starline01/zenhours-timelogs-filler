@@ -101,7 +101,7 @@ down to whoever the current page belongs to.
 a worked example; sheets named READ ME / Instructions / Notes / Guide are skipped
 by the importer, so documentation can live in the same workbook.
 
-1. Click **Load Excel / CSV…** and pick the file. **You do not have to reformat
+1. Click **Load Excel, CSV or a scan…** and pick the file. **You do not have to reformat
    a client's DTR first** — each sheet is sniffed and read according to its own
    shape (see *Messy client DTRs* below).
 
@@ -172,6 +172,37 @@ and the run summary tells you how many punches were re-dated. Rows the importer
 distrusts — overnight, missing in/out, an odd number of punches, a span under 1h
 or over 16h, or hours that disagree with the sheet's own total by more than 1.5h
 — are listed per guard when you select them.
+
+### Scanned sheets (OCR)
+
+Load a **.png / .jpg / .webp / .tif** of a printed DTR and it is read on this PC —
+Tesseract runs in the browser, the image is never uploaded anywhere.
+
+The result goes into the paste box for you to check, and **nothing is filled
+automatically**. OCR confuses `0/8`, `1/7` and `5/6`, and a DTR is nothing but
+digits, so every value is a draft until you have compared it to the sheet.
+
+What protects you:
+
+- **Columns come from the values, not the headings.** The row with the most
+  punches defines the grid; headings only name the columns. OCR often welds
+  headings together (`LUNCHIN`, `OUBREAK`) — that no longer matters, and a
+  missing punch leaves a gap in the right column instead of shifting the row.
+  The log prints the order it read: `Time In | Lunch Out | Lunch In | …`
+- **Unreadable cells become `??:??`**, which the filler refuses. They are never
+  guessed, and the log names each one.
+- **A sheet below 80% confidence is refused outright.** A clean printed scan
+  reads at 90%+; a photographed handwritten form lands near 60–70% and produces
+  values that look perfectly valid and are wrong. Refusing costs you a retype;
+  accepting corrupts a guard's pay.
+- **Dates must already be on the page.** A row whose date isn't in the range you
+  searched is dropped, since a misread date is as likely as a misread time.
+
+**Handwritten DTRs will be refused** — Tesseract cannot read handwriting, and it
+is better to say so than to invent numbers. Type those in by hand.
+
+Scanning tips: flat on the glass, 300dpi, straight (not a phone photo at an
+angle). PDFs aren't read directly yet — export the page as PNG first.
 
 ### Excel support
 

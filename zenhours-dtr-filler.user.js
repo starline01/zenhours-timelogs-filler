@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.3.0
+// @version      1.4.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
 // @match        *://zenoras.com/*
 // @require      https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
+// @require      https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js
 // @updateURL    https://raw.githubusercontent.com/starline01/zenhours-timelogs-filler/main/zenhours-dtr-filler.user.js
 // @downloadURL  https://raw.githubusercontent.com/starline01/zenhours-timelogs-filler/main/zenhours-dtr-filler.user.js
 // @run-at       document-idle
@@ -72,7 +73,7 @@
 //     script reads it and maps the columns by name instead of by position —
 //     so a different column order still works.
 //
-//  3b. OR load a whole workbook: click "Load Excel / CSV…" and pick a file
+//  3b. OR load a whole workbook: click "Load Excel, CSV or a scan…" and pick a file
 //     holding every guard (EmpID · Name · Date · Day · In · LOut · LIn · BOut ·
 //     BIn · Out). Editing in Zenoras is per employee, so the script reads the
 //     access ID and name shown on the page, finds that guard in the file, and
@@ -926,6 +927,7 @@
     const LINKS_KEY = 'zdf.pagelinks.v1';     // URL path → employee key, once confirmed
     const DONE_KEY = 'zdf.done.v1';
 
+    let ocrActive = false;    // OCR output sits in the box for THIS page's guard
     let roster = null;        // { employees: [{key, id, name, rows:[{date,times,blanks}]}], source }
 
     function readStore(key, fallback) {
@@ -1594,6 +1596,239 @@
     function isDone(emp) { return !!readStore(DONE_KEY, {})[doneKeyFor(emp)]; }
 
     // =====================================================================
+    //  OCR — reading a scanned or photographed DTR sheet
+    // =====================================================================
+    //  Tesseract runs entirely in this browser: the image never leaves the PC.
+    //
+    //  A DTR is nothing but digits, and OCR confuses 0/8, 1/7, 5/6 exactly
+    //  there — one misread digit is somebody's pay. So nothing read here is
+    //  trusted. A cell the engine is unsure of is written as ??:?? rather than
+    //  a plausible guess, which the parser then refuses to fill, and every
+    //  uncertain cell is named in the log so you can check it against the page.
+
+    const OCR_IMAGE_RE = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
+    // Thresholds are deliberately strict. A clean printed scan reads at 90%+,
+    // while a photographed handwritten form lands around 60-70% and produces
+    // values that look perfectly plausible and are simply wrong. Refusing a
+    // borderline sheet costs a retype; accepting one corrupts someone's pay.
+    const OCR_CELL_MIN = 80;      // below this a single value is not trustworthy
+    const OCR_PAGE_MIN = 80;      // below this the whole sheet is unreadable
+    const TIMEISH_RE = /^\d{1,2}\s*[:.;]\s*\d{2}$|^\d{3,4}\s*h?$/i;
+    const UNREADABLE = '??:??';
+
+    function ocrAvailable() { return typeof Tesseract !== 'undefined'; }
+
+    /** Run Tesseract over an image file, reporting progress into the log. */
+    async function ocrRecognize(file, onProgress) {
+        if (!ocrAvailable()) {
+            throw new Error('the OCR library did not load — check the connection and reload the page');
+        }
+        let last = -1;
+        const worker = await Tesseract.createWorker('eng', 1, {
+            logger: (m) => {
+                if (!m || typeof m.progress !== 'number') return;
+                const pct = Math.round(m.progress * 100);
+                if (m.status === 'recognizing text' && pct >= last + 25) { last = pct; onProgress(`reading… ${pct}%`); }
+            }
+        });
+        try {
+            const { data } = await worker.recognize(file);
+            return data;
+        } finally {
+            try { await worker.terminate(); } catch (e) { /* ignore */ }
+        }
+    }
+
+    /** Cluster recognised words into visual rows by vertical overlap. */
+    function groupWordsIntoRows(words) {
+        const rows = [];
+        for (const w of words) {
+            if (!w || !w.text || !w.text.trim() || !w.bbox) continue;
+            const mid = (w.bbox.y0 + w.bbox.y1) / 2;
+            const h = Math.max(1, w.bbox.y1 - w.bbox.y0);
+            let row = null;
+            for (const r of rows) {
+                if (Math.abs(r.mid - mid) < Math.max(h, r.h) * 0.6) { row = r; break; }
+            }
+            if (!row) { row = { mid, h, words: [] }; rows.push(row); }
+            row.words.push(w);
+            row.h = Math.max(row.h, h);
+            row.mid = row.words.reduce((a, x) => a + (x.bbox.y0 + x.bbox.y1) / 2, 0) / row.words.length;
+        }
+        rows.forEach((r) => r.words.sort((a, b) => a.bbox.x0 - b.bbox.x0));
+        return rows.sort((a, b) => a.mid - b.mid);
+    }
+
+    /**
+     * Find header labels and where they sit horizontally. Used only to NAME
+     * columns, never to position them — OCR routinely welds adjacent headers
+     * together ("LUNCHIN", "OUBREAK") and mangles the rest.
+     */
+    function findHeaderColumns(rows) {
+        for (const row of rows) {
+            const found = [];
+            for (let i = 0; i < row.words.length; i++) {
+                const w = row.words[i], next = row.words[i + 1];
+                const one = normKey(w.text);
+                const two = next ? normKey(w.text + ' ' + next.text) : '';
+                const pair = two && HEADER_ALIASES[two];
+                const col = pair || HEADER_ALIASES[one];
+                if (!col || found.some((f) => f.col === col)) continue;
+                const span = pair ? [w, next] : [w];
+                found.push({ col, x: (span[0].bbox.x0 + span[span.length - 1].bbox.x1) / 2 });
+                if (pair) i++;
+            }
+            if (found.length >= 2) return { headerRow: row, cols: found.sort((a, b) => a.x - b.x) };
+        }
+        return null;
+    }
+
+    const isTimeWord = (w) => TIMEISH_RE.test(String(w.text || '').trim().replace(/[^\dhH:;.]/g, ''));
+    const wordX = (w) => (w.bbox.x0 + w.bbox.x1) / 2;
+
+    /**
+     * Work out the sheet's time columns from where the VALUES actually sit —
+     * the row with the most punches defines the grid — then name those columns
+     * from the header wherever a label sits over one, and fill the rest in
+     * canonical order. This survives a header OCR mangled beyond recognition.
+     */
+    function buildColumnGrid(dataRows, header) {
+        let template = null;
+        for (const row of dataRows) {
+            const n = row.words.filter(isTimeWord).length;
+            if (!template || n > template.n) template = { row, n };
+        }
+        if (!template || !template.n) return null;
+
+        const centers = template.row.words.filter(isTimeWord).map(wordX).sort((a, b) => a - b);
+        let spacing = Infinity;
+        for (let i = 1; i < centers.length; i++) spacing = Math.min(spacing, centers[i] - centers[i - 1]);
+        if (!isFinite(spacing)) spacing = 120;
+        const tolerance = Math.max(20, spacing * 0.5);
+
+        const assigned = centers.map(() => null);
+        if (header) {
+            for (const hc of header.cols) {
+                let best = -1, bestD = Infinity;
+                centers.forEach((x, i) => {
+                    const d = Math.abs(x - hc.x);
+                    if (d < bestD) { bestD = d; best = i; }
+                });
+                // A label only names a column it actually sits over.
+                if (best >= 0 && bestD <= Math.max(tolerance, spacing * 0.75)
+                    && !assigned[best] && assigned.indexOf(hc.col) < 0) {
+                    assigned[best] = hc.col;
+                }
+            }
+        }
+        const used = new Set(assigned.filter(Boolean));
+        let cursor = 0;
+        for (let i = 0; i < assigned.length; i++) {
+            if (assigned[i]) { cursor = COLUMNS.indexOf(assigned[i]) + 1; continue; }
+            while (cursor < COLUMNS.length && used.has(COLUMNS[cursor])) cursor++;
+            if (cursor >= COLUMNS.length) break;
+            assigned[i] = COLUMNS[cursor];
+            used.add(COLUMNS[cursor]);
+            cursor++;
+        }
+        return { centers, assigned, tolerance, named: used.size };
+    }
+
+    /** Normalise one OCR'd time token; null when it is not a time at all. */
+    function ocrToken(word) {
+        const text = String(word.text || '').trim().replace(/[^\dhH:;.]/g, '');
+        if (!TIMEISH_RE.test(text)) return null;
+        if (word.confidence != null && word.confidence < OCR_CELL_MIN) return { value: UNREADABLE, low: true };
+        const t = parseTime(text);
+        if (!t) return { value: UNREADABLE, low: true };
+        return { value: pad2(t.h) + ':' + pad2(t.m), low: false };
+    }
+
+    /**
+     * Turn a recognised page into paste-box lines.
+     * Dates: a full date is used as-is; a bare day number is matched against
+     * the dates already on screen, so "3" becomes the 3rd of the shown month.
+     */
+    function ocrToLines(data, pageDates) {
+        const rows = groupWordsIntoRows((data && data.words) || []);
+        const header = findHeaderColumns(rows);
+        const dayToDate = new Map();
+        for (const iso of pageDates) {
+            const day = +iso.slice(8, 10);
+            if (dayToDate.has(day)) dayToDate.set(day, null);       // ambiguous across months
+            else dayToDate.set(day, iso);
+        }
+
+        const onPage = new Set(pageDates);
+        const dateOf = (row) => {
+            for (const w of row.words) {
+                const raw = String(w.text || '').trim();
+                const full = parseDate(raw.replace(/[^\d\/\-.]/g, ''), null);
+                // Only trust a date the page is actually showing — a misread
+                // date is as likely as a misread time, and an off-page row
+                // could not be filled regardless.
+                if (full && (!onPage.size || onPage.has(full))) return full;
+                const n = +raw.replace(/[^\d]/g, '');
+                if (n >= 1 && n <= 31 && dayToDate.get(n)) return dayToDate.get(n);
+            }
+            return null;
+        };
+
+        const headerRow = header && header.headerRow;
+        const dataRows = rows.filter((r) => r !== headerRow && dateOf(r) && r.words.some(isTimeWord));
+        const grid = buildColumnGrid(dataRows, header);
+        const base = {
+            lines: [], issues: [], timeTokens: 0, lowCells: 0,
+            confidence: (data && typeof data.confidence === 'number') ? data.confidence : 0,
+            usedHeader: !!header, named: 0, columns: []
+        };
+        if (!grid) return base;
+
+        const lines = [], issues = [];
+        let timeTokens = 0, lowCells = 0;
+
+        for (const row of dataRows) {
+            const date = dateOf(row);
+            const cells = COLUMNS.map(() => '');
+            let placed = 0;
+
+            for (const w of row.words) {
+                const tok = ocrToken(w);
+                if (!tok) continue;
+                timeTokens++;
+                if (tok.low) lowCells++;
+
+                const x = wordX(w);
+                let best = -1, bestD = Infinity;
+                grid.centers.forEach((cx, i) => {
+                    const d = Math.abs(cx - x);
+                    if (d < bestD) { bestD = d; best = i; }
+                });
+                if (best < 0 || bestD > grid.tolerance * 2 || !grid.assigned[best]) {
+                    issues.push(date + ': a value did not line up under any column — check that row');
+                    continue;
+                }
+                const idx = COLUMNS.indexOf(grid.assigned[best]);
+                if (cells[idx]) {
+                    issues.push(date + ': two values landed in ' + COLUMN_LABELS[COLUMNS[idx]] + ' — check that row');
+                    continue;
+                }
+                cells[idx] = tok.value;
+                if (tok.low) issues.push(date + ': ' + COLUMN_LABELS[COLUMNS[idx]] + ' could not be read clearly');
+                placed++;
+            }
+            if (!placed) continue;
+            lines.push([date].concat(cells.map((c) => c || '-')).join('\t'));
+        }
+
+        return {
+            lines, issues, timeTokens, lowCells,
+            confidence: base.confidence, usedHeader: !!header, named: grid.named,
+            columns: grid.assigned.map((c) => (c ? COLUMN_LABELS[c] : '?'))
+        };
+    }
+
+    // =====================================================================
     //  PANEL UI
     // =====================================================================
 
@@ -1670,8 +1905,8 @@
             </div>
             <div id="zdf-body">
                 <div class="zdf-file">
-                    <label for="zdf-xlsx" id="zdf-filelabel">Load Excel / CSV…</label>
-                    <input type="file" id="zdf-xlsx" accept=".xlsx,.xls,.csv">
+                    <label for="zdf-xlsx" id="zdf-filelabel">Load Excel, CSV or a scan…</label>
+                    <input type="file" id="zdf-xlsx" accept=".xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff">
                     <button id="zdf-forget" title="Forget the loaded file">Clear</button>
                 </div>
                 <div id="zdf-roster">
@@ -1798,9 +2033,68 @@
             } else if (autoMatch) {
                 empSelect.value = '';
                 $id('zdf-paste').value = '';        // never leave another guard's times sitting here
+                ocrActive = false;
                 matchBox.className = 'miss';
                 matchBox.textContent = 'Could not tell which employee this page is for — pick them from the list above. '
                     + 'Filling is blocked until you do.';
+            }
+        }
+
+        /**
+         * Read a scanned DTR into the paste box. Deliberately does NOT enter the
+         * roster or fill anything: OCR output is a draft for you to check against
+         * the sheet in front of you, and unreadable cells are left as ??:?? so
+         * the parser refuses them rather than inventing a plausible time.
+         */
+        async function runOcr(file) {
+            const buttons = panel.querySelectorAll('.zdf-btns button');
+            buttons.forEach((b) => (b.disabled = true));
+            log(`Reading ${file.name} with OCR — this runs on this PC, the image is not uploaded.`, 'info');
+            status('Running OCR…');
+            try {
+                const data = await ocrRecognize(file, (msg) => status(msg));
+                const pageDates = Array.from(indexRows().keys());
+                const res = ocrToLines(data, pageDates);
+
+                // Quality gate: refuse rather than emit confident-looking nonsense.
+                if (res.confidence && res.confidence < OCR_PAGE_MIN) {
+                    log(`Overall confidence ${Math.round(res.confidence)}% — too low to trust.`, 'err');
+                    log('That usually means a handwritten form, a photo at an angle, or a low-resolution scan.', 'info');
+                    log('Nothing was filled. Type these times in by hand, or rescan flat at 300dpi.', 'info');
+                    status('OCR refused — sheet not readable.');
+                    return;
+                }
+                if (!res.lines.length) {
+                    log('No dated rows could be read from that image.', 'err');
+                    log(res.timeTokens
+                        ? 'Times were found but no dates — make sure the date column is in the picture, and Search the matching range on this page first.'
+                        : 'No times were found at all — if this is a handwritten form, OCR cannot read it.', 'info');
+                    status('OCR found nothing to fill.');
+                    return;
+                }
+
+                ocrActive = true;
+                $id('zdf-paste').value = res.lines.join('\n');
+                log(`Read ${res.lines.length} row(s) at ${Math.round(res.confidence)}% overall confidence`
+                    + (res.usedHeader ? ", using the sheet's own column headers." : ", left-to-right (no header row found)."), 'ok');
+                if (res.columns && res.columns.length) {
+                    log('  columns read left to right: ' + res.columns.join(' | '), 'info');
+                }
+                if (!res.usedHeader) {
+                    log("! Without a header row, a missing punch can shift a row's columns — check each row.", 'warn');
+                }
+                res.issues.slice(0, 10).forEach((i) => log('  ! ' + i, 'warn'));
+                if (res.issues.length > 10) log(`  ! …and ${res.issues.length - 10} more.`, 'warn');
+                if (res.lowCells) {
+                    log(`${res.lowCells} cell(s) came out as ${UNREADABLE} — they will NOT be filled until you type them in.`, 'warn');
+                }
+                log('Check every value against the sheet before filling. OCR misreads digits.', 'warn');
+                status(`OCR read ${res.lines.length} rows — review them, then Fill.`);
+            } catch (err) {
+                log('OCR failed: ' + (err && err.message ? err.message : String(err)), 'err');
+                status('OCR failed.');
+            } finally {
+                buttons.forEach((b) => (b.disabled = false));
             }
         }
 
@@ -1808,8 +2102,19 @@
             const file = e.target.files && e.target.files[0];
             if (!file) return;
             logBox.innerHTML = '';
+            if (/\.pdf$/i.test(file.name)) {
+                log('PDFs are not read directly yet — export the page as a PNG or JPG and load that.', 'err');
+                e.target.value = '';
+                return;
+            }
+            if (OCR_IMAGE_RE.test(file.name) || /^image\//.test(file.type || '')) {
+                await runOcr(file);
+                e.target.value = '';
+                return;
+            }
             log(`Reading ${file.name}…`, 'info');
             try {
+                ocrActive = false;
                 const sheets = await readWorkbook(file);
                 roster = buildRoster(sheets, file.name);
                 if (!roster.employees.length) {
@@ -1840,6 +2145,7 @@
         empSelect.addEventListener('change', () => {
             const emp = selectedEmployee();
             if (!emp) return;
+            ocrActive = false;          // roster data supersedes an earlier scan
             matchBox.className = 'hit';
             matchBox.textContent = `${emp.name || emp.key} — ${emp.rows.length} days loaded into the box below.`;
             loadSelectedIntoBox(true);        // remember: you told us who this page is
@@ -1861,7 +2167,7 @@
             roster = null;
             try { localStorage.removeItem(ROSTER_KEY); } catch (err) { /* ignore */ }
             $id('zdf-roster').style.display = 'none';
-            $id('zdf-filelabel').textContent = 'Load Excel / CSV…';
+            $id('zdf-filelabel').textContent = 'Load Excel, CSV or a scan…';
             log('Forgot the loaded file. The paste box still works on its own.', 'info');
         });
 
@@ -1894,7 +2200,7 @@
             // With a workbook loaded, filling requires knowing whose page this is.
             // Writing one guard's hours onto another is the expensive mistake here,
             // so this refuses rather than guesses.
-            if (roster && roster.employees.length && !selectedEmployee()) {
+            if (roster && roster.employees.length && !selectedEmployee() && !ocrActive) {
                 log('No employee selected for this page.', 'err');
                 log('Pick the guard from the list above — or click Clear to drop the file and paste manually.', 'info');
                 status('Pick the employee first.');
