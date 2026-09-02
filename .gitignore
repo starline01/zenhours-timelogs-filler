@@ -7,3 +7,5 @@ desktop.ini
 .DS_Store
 *.swp
 ~$*.xlsx
+test/*.xlsx
+!test/fixtures/*.xlsx   # generated fixtures ARE tracked

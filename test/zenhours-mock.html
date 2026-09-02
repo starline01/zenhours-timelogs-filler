@@ -66,12 +66,20 @@ const STAFF = [
   { name: 'Santos, Maria',    id: '121915' },
   { name: 'Reyes, Antonio',   id: '121916' }
 ];
-const WHO = STAFF[+(params.get('emp') || 0)] || STAFF[0];
+// ?guard=NAME&id=NNN stands in for any other employee page (no Access ID = blank)
+const WHO = params.get('guard')
+  ? { name: params.get('guard'), id: params.get('id') || '' }
+  : (STAFF[+(params.get('emp') || 0)] || STAFF[0]);
 document.getElementById('empname').textContent = WHO.name;
 document.getElementById('empid').textContent = WHO.id;
 document.title = `Timelogs — ${WHO.name}`;
 
-for (let day = 14; day >= 1; day--) {          // page lists newest first
+// ?d1=16&d2=31 changes the searched range, like a different cut-off
+const D1 = +(params.get('d1') || 1), D2 = +(params.get('d2') || 14);
+document.querySelectorAll('.toolbar input')[0].value = `08/${pad(D1)}/2026`;
+document.querySelectorAll('.toolbar input')[1].value = `08/${pad(D2)}/2026`;
+
+for (let day = D2; day >= D1; day--) {        // page lists newest first
   const iso = `2026-08-${pad(day)}`;
   const tr = document.createElement('tr');
   tr.innerHTML =

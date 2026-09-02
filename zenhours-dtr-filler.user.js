@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.4.0
+// @version      1.4.1
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -257,6 +257,53 @@
         return { h, m, plus };
     }
 
+    // A punch landing more than this far BEFORE the previous one has crossed
+    // midnight. Six hours is loose enough for a long shift and tight enough
+    // that an out-of-order punch is not mistaken for a new day.
+    const ROLL_HOURS = 6;
+    // No real shift runs this long; beyond it, a backward punch is a typo.
+    const MAX_SPAN_HOURS = 18;
+
+    /**
+     * Walk a row's punches left to right and mark each one with how many days
+     * past the row's own date it falls. A 18:00 -> 06:00 night shift leaves
+     * Time Out as { h:6, m:0, plus:1 }.
+     *
+     * Only ever moves a punch FORWARD within its own row — the row itself never
+     * moves to another date, and a missing or unreadable punch simply breaks
+     * the chain rather than dragging the rest of the row with it.
+     */
+    function applyOvernightRoll(times) {
+        let prevAbs = null, firstAbs = null, overnight = false, outOfOrder = false;
+        for (const col of COLUMNS) {
+            const t = times[col];
+            if (!t) continue;                       // gap: leave the chain alone
+            let abs = t.h * 60 + t.m;
+            let plus = 0;
+            if (prevAbs !== null && abs < prevAbs && prevAbs - abs >= ROLL_HOURS * 60) {
+                let rolled = abs, steps = 0;
+                while (rolled < prevAbs) { rolled += 1440; steps++; }
+                // Refuse a roll that would stretch the shift past any plausible
+                // length. Without this, one mistyped punch (15:07 keyed as
+                // 05:07) rolls itself AND drags every punch after it onto the
+                // next day — a 12-hour shift read as 36 hours.
+                if (firstAbs === null || rolled - firstAbs <= MAX_SPAN_HOURS * 60) {
+                    abs = rolled;
+                    plus = steps;
+                    overnight = true;
+                } else {
+                    outOfOrder = true;              // leave it on this date, flagged
+                }
+            } else if (prevAbs !== null && abs < prevAbs) {
+                outOfOrder = true;
+            }
+            t.plus = plus;
+            if (firstAbs === null) firstAbs = abs;
+            if (prevAbs === null || abs > prevAbs) prevAbs = abs;
+        }
+        return { overnight, outOfOrder };
+    }
+
     /** ISO date shifted by n whole days. */
     function addDays(iso, n) {
         if (!n) return iso;
@@ -329,11 +376,19 @@
     /**
      * Drop leading label columns that sit between the date and the first time
      * — day-of-week ("TUESDAY"), employee name, "No Schedule", etc.
-     * Stops at the first blank cell, because a blank is a real (skipped) time
-     * column and dropping it would shift every column after it.
+     *
+     * Deliberately conservative: a value that merely FAILED to parse is not a
+     * label. Dropping it would slide every later punch one column left, so a
+     * single unreadable Time In would quietly land Time Out in Break In. Day
+     * names are always safe to drop; anything else is only dropped while the
+     * row still has more fields than the table has time columns.
      */
     function stripLabelColumns(rest, dropped) {
-        while (rest.length) {
+        while (rest.length && DAY_NAMES.has(normKey(rest[0]))) {
+            dropped.push(norm(rest[0]));
+            rest.shift();
+        }
+        while (rest.length > COLUMNS.length) {
             const field = rest[0];
             if (norm(field) === '' || isBlankText(field)) break;   // genuine empty time cell
             if (parseTime(field) !== null) break;                  // reached the times
@@ -350,7 +405,7 @@
      * Detects an optional header line and remaps columns by name when present.
      */
     function parsePaste(text, fallbackYear) {
-        const out = { entries: [], warnings: [], mapping: null };
+        const out = { entries: [], warnings: [], mapping: null, overnightRows: 0 };
         const lines = String(text || '').split(/\r?\n/).filter((l) => norm(l) !== '');
         if (!lines.length) return out;
 
@@ -426,6 +481,18 @@
 
             if (rest.length > order.length) {
                 out.warnings.push(`Line ${i + 1}: ${rest.length} time columns but the table has ${order.length} — extras ignored`);
+            }
+
+            // Roll a night shift onto the following day. Skipped when the source
+            // already stated the days itself (a "+1" suffix or a full datetime),
+            // so an explicit offset is never doubled.
+            const stated = COLUMNS.some((c) => times[c] && times[c].plus > 0);
+            if (!stated) {
+                const roll = applyOvernightRoll(times);
+                if (roll.overnight) out.overnightRows++;
+                if (roll.outOfOrder) {
+                    out.warnings.push(`Line ${i + 1}: a punch runs backwards by less than ${ROLL_HOURS}h — left on ${date}, check it`);
+                }
             }
 
             if (!Object.keys(times).length) {
@@ -959,34 +1026,19 @@
     const cellText = (ws, r, c) => norm(cellAt(ws, r, c));
     const upper = (s) => String(s == null ? '' : s).toUpperCase().replace(/\s+/g, ' ').trim();
 
-    const ROLL_HOURS = 6;    // a backward jump this large means the clock crossed midnight
-
     /**
-     * Turn six raw punches into { times, flags }, rolling each punch onto the
-     * next day when it falls before the previous one — this is what makes a
-     * night shift's Time Out land on the correct date.
+     * Turn six raw punches into { times, flags }, using the shared overnight
+     * roll so a workbook and the paste box treat a night shift identically.
      */
     function sequencePunches(raw) {
         const times = {};
-        let prevAbs = null, overnight = false, outOfOrder = false, present = 0;
-
+        let present = 0;
         for (const col of COLUMNS) {
-            const t = raw[col];
-            if (!t) continue;
+            if (!raw[col]) continue;
             present++;
-            let abs = t.h * 60 + t.m;
-            let plus = 0;
-            if (prevAbs !== null && abs < prevAbs) {
-                if (prevAbs - abs >= ROLL_HOURS * 60) {
-                    while (abs < prevAbs) { abs += 1440; plus++; }
-                    overnight = true;
-                } else {
-                    outOfOrder = true;
-                }
-            }
-            times[col] = { h: t.h, m: t.m, plus };
-            if (prevAbs === null || abs > prevAbs) prevAbs = abs;
+            times[col] = { h: raw[col].h, m: raw[col].m, plus: 0 };
         }
+        const { overnight, outOfOrder } = applyOvernightRoll(times);
 
         const flags = [];
         if (overnight) flags.push('overnight');
@@ -1103,6 +1155,35 @@
         return out;
     }
 
+    /**
+     * Banner text above a client DTR: which store it belongs to and which
+     * cut-off it covers. Shown when the file loads, because importing last
+     * fortnight's sheet by mistake is otherwise invisible until it is saved.
+     */
+    function sheetContext(ws) {
+        if (!ws || !ws['!ref']) return {};
+        const rng = sheetRange(ws);
+        const out = {};
+        const grab = (re, key) => {
+            for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 14) && !out[key]; r++) {
+                for (let c = rng.s.c; c <= Math.min(rng.e.c, rng.s.c + 8); c++) {
+                    const v = String(cellAt(ws, r, c) || '');
+                    const m = v.match(re);
+                    if (!m) continue;
+                    if (m[1] && m[1].trim()) { out[key] = norm(m[1]); break; }
+                    for (let cc = c + 1; cc <= Math.min(rng.e.c, c + 4); cc++) {   // value sits to the right
+                        const nv = cellAt(ws, r, cc);
+                        if (nv != null && String(nv).trim()) { out[key] = norm(nv); break; }
+                    }
+                    if (out[key]) break;
+                }
+            }
+        };
+        grab(/^\s*STORE\s*:?\s*(.*)$/i, 'store');
+        grab(/^\s*CUT ?OFF\s*:?\s*(.*)$/i, 'period');
+        return out;
+    }
+
     // ── Layout B: stacked blocks — "SECURITY GUARD: ..." above each table ─
     const STACK_HEADERS = {
         'DATE': 'date', 'SCHEDULE': 'schedule', 'SCHED': 'schedule',
@@ -1176,7 +1257,17 @@
                 const raw = {};
                 for (const c of COLUMNS) raw[c] = map[c] != null ? parseTime(cellAt(ws, r, map[c])) : null;
                 if (!COLUMNS.some((c) => raw[c]) || REST_RE.test(sched)) {
-                    out.push(makeRestRow(id, guard, date, 'rest day'));
+                    // These sheets often spell a marker one letter per cell:
+                    // D | A | Y | O | F | F. Rebuild it so the reason is real
+                    // rather than a guess.
+                    let spelled = '';
+                    for (const c of COLUMNS) {
+                        const v = map[c] != null ? norm(cellAt(ws, r, map[c])) : '';
+                        if (v.length === 1) spelled += v;
+                    }
+                    const marker = spelled.length >= 3 ? spelled.toUpperCase() : upper(sched);
+                    out.push(makeRestRow(id, guard, date,
+                        marker && REST_RE.test(marker) ? marker.toLowerCase() : (marker ? marker.toLowerCase() : 'rest day')));
                     continue;
                 }
                 out.push(makeRow(id, guard, date, raw, map.hours != null ? cellAt(ws, r, map.hours) : null, []));
@@ -1336,38 +1427,48 @@
     }
 
     // ── The router ───────────────────────────────────────────────────────
+    /**
+     * Decide what a sheet is. Scans the WHOLE sheet, because a client workbook
+     * routinely carries a planned roster ("ACTUAL SCHEDULE OF GUARDS") above the
+     * real punches ("ACTUAL TIME LOGS") — and the punches must win. A schedule
+     * verdict is only reached when the sheet holds no time logs at all.
+     */
     function classifySheet(ws) {
-        if (!ws || !ws['!ref']) return 'empty';
+        if (!ws || !ws['!ref']) return { format: 'empty', sawSchedule: false };
         const rng = sheetRange(ws);
-        const lastRow = Math.min(rng.e.r, rng.s.r + 60);
-        for (let r = rng.s.r; r <= lastRow; r++) {
+        let sawSchedule = false, sawFlat = false, sawDayNumber = false, sawStacked = false;
+
+        for (let r = rng.s.r; r <= rng.e.r; r++) {
             for (let c = rng.s.c; c <= rng.e.c; c++) {
-                const v = String(cellAt(ws, r, c) || '');
-                if (/SCHEDULE_START_DATE|SCHEDULE_END_DATE|ACTUAL SCHEDULE OF GUARDS/i.test(v)) return 'schedule';
+                const v = cellAt(ws, r, c);
+                if (typeof v !== 'string' || !v) continue;
+                if (/SCHEDULE_START_DATE|SCHEDULE_END_DATE|ACTUAL SCHEDULE OF GUARDS/i.test(v)) { sawSchedule = true; continue; }
+                if (/Personnel Name|Employee Name|DTR Summary Report/i.test(v)) { sawFlat = true; continue; }
+                if (/INN?ITIAL IN/i.test(v)) { sawDayNumber = true; continue; }
+                if (/ACTUAL TIME ?LOGS|SECURITY GUARD\s*:|LADY GUARD\s*:|NAME OF GUARD/i.test(v)
+                    || /^\s*TIME\s*IN\s*$/i.test(v)) { sawStacked = true; }
             }
         }
-        if (detectTableColumns(ws)) return 'table';
-        for (let r = rng.s.r; r <= lastRow; r++) {
-            for (let c = rng.s.c; c <= rng.e.c; c++) {
-                const v = String(cellAt(ws, r, c) || '');
-                if (/Personnel Name|Employee Name|DTR Summary Report/i.test(v)) return 'flat';
-                if (/INN?ITIAL IN/i.test(v)) return 'daynumber';
-                if (/SECURITY GUARD\s*:|LADY GUARD\s*:|NAME OF GUARD/i.test(v) || /^\s*TIME\s*IN\s*$/i.test(v)) return 'stacked';
-            }
-        }
-        if (looksPositional(ws)) return 'positional';
-        return 'unknown';
+
+        let format = 'unknown';
+        if (detectTableColumns(ws)) format = 'table';
+        else if (sawFlat) format = 'flat';
+        else if (sawDayNumber) format = 'daynumber';
+        else if (sawStacked) format = 'stacked';
+        else if (looksPositional(ws)) format = 'positional';
+        else if (sawSchedule) format = 'schedule';
+        return { format, sawSchedule };
     }
 
     function parseSheet(ws, sheetName, fallbackYear) {
-        const format = classifySheet(ws);
+        const { format, sawSchedule } = classifySheet(ws);
         let rows = [];
         if (format === 'table') rows = parseTable(ws, detectTableColumns(ws), sheetName);
         else if (format === 'flat') rows = parseFlatReport(ws);
         else if (format === 'stacked') rows = parseStackedBlocks(ws, sheetName);
         else if (format === 'daynumber') rows = parseDayNumberBlocks(ws, fallbackYear);
         else if (format === 'positional') rows = parsePositional(ws);
-        return { format, rows };
+        return { format, rows, sawSchedule };
     }
 
     const FORMAT_LABELS = {
@@ -1450,7 +1551,13 @@
                 }
                 continue;
             }
-            formats.push(`${sheetName}: ${FORMAT_LABELS[parsed.format]}`);
+            const ctx = sheetContext(ws);
+            formats.push(`${sheetName}: ${FORMAT_LABELS[parsed.format]}`
+                + (ctx.store ? ` — ${ctx.store}` : '')
+                + (ctx.period ? ` — ${ctx.period}` : ''));
+            if (parsed.sawSchedule) {
+                warnings.push(`Sheet "${sheetName}" also holds a planned schedule above the time logs — only the actual punches were read`);
+            }
 
             for (const row of parsed.rows) {
                 const key = row.id || row.name || sheetName;
@@ -1613,7 +1720,11 @@
     // borderline sheet costs a retype; accepting one corrupts someone's pay.
     const OCR_CELL_MIN = 80;      // below this a single value is not trustworthy
     const OCR_PAGE_MIN = 80;      // below this the whole sheet is unreadable
-    const TIMEISH_RE = /^\d{1,2}\s*[:.;]\s*\d{2}$|^\d{3,4}\s*h?$/i;
+    // Accepts 10:20 · 10:20PM · 1020 · 1020H. The am/pm half matters: stripping
+    // it made every scanned 12-hour time read as if it were 24-hour, so a
+    // 06:00PM Time In came back as six in the morning.
+    const TIMEISH_RE = /^\d{1,2}\s*[:.;]\s*\d{2}\s*(?:[ap]\.?m\.?)?$|^\d{3,4}\s*h?$/i;
+    const OCR_KEEP_RE = /[^\dhH:;.aApPmM]/g;
     const UNREADABLE = '??:??';
 
     function ocrAvailable() { return typeof Tesseract !== 'undefined'; }
@@ -1683,7 +1794,8 @@
         return null;
     }
 
-    const isTimeWord = (w) => TIMEISH_RE.test(String(w.text || '').trim().replace(/[^\dhH:;.]/g, ''));
+    const ocrClean = (t) => String(t || '').trim().replace(OCR_KEEP_RE, '');
+    const isTimeWord = (w) => TIMEISH_RE.test(ocrClean(w.text));
     const wordX = (w) => (w.bbox.x0 + w.bbox.x1) / 2;
 
     /**
@@ -1735,13 +1847,19 @@
     }
 
     /** Normalise one OCR'd time token; null when it is not a time at all. */
-    function ocrToken(word) {
-        const text = String(word.text || '').trim().replace(/[^\dhH:;.]/g, '');
+    function ocrToken(word, suffixWord) {
+        let text = ocrClean(word.text);
+        // Tesseract often splits "6:00 PM" into two words; glue the marker back
+        // on, otherwise the time is read as 06:00.
+        if (suffixWord && /^[ap]\.?m\.?$/i.test(ocrClean(suffixWord.text)) && /^\d{1,2}[:.;]\d{2}$/.test(text)) {
+            text += ocrClean(suffixWord.text);
+        }
         if (!TIMEISH_RE.test(text)) return null;
-        if (word.confidence != null && word.confidence < OCR_CELL_MIN) return { value: UNREADABLE, low: true };
+        const merged = text !== ocrClean(word.text);
+        if (word.confidence != null && word.confidence < OCR_CELL_MIN) return { value: UNREADABLE, low: true, merged };
         const t = parseTime(text);
-        if (!t) return { value: UNREADABLE, low: true };
-        return { value: pad2(t.h) + ':' + pad2(t.m), low: false };
+        if (!t) return { value: UNREADABLE, low: true, merged };
+        return { value: pad2(t.h) + ':' + pad2(t.m), low: false, merged };
     }
 
     /**
@@ -1792,9 +1910,11 @@
             const cells = COLUMNS.map(() => '');
             let placed = 0;
 
-            for (const w of row.words) {
-                const tok = ocrToken(w);
+            for (let wi = 0; wi < row.words.length; wi++) {
+                const w = row.words[wi];
+                const tok = ocrToken(w, row.words[wi + 1]);
                 if (!tok) continue;
+                if (tok.merged) wi++;                    // the AM/PM word was consumed
                 timeTokens++;
                 if (tok.low) lowCells++;
 
@@ -1834,8 +1954,11 @@
 
     const CSS = `
     #zdf-panel { position: fixed; top: 12px; right: 12px; z-index: 2147483600;
-        width: 380px; background: #ffffff; color: #1f2933; font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
-        border: 1px solid #cbd2d9; border-radius: 10px; box-shadow: 0 10px 34px rgba(0,0,0,.22); overflow: hidden; }
+        width: min(380px, calc(100vw - 24px));
+        max-height: calc(100vh - 24px); display: flex; flex-direction: column;
+        background: #ffffff; color: #1f2933; font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+        border: 1px solid #cbd2d9; border-radius: 10px; box-shadow: 0 10px 34px rgba(0,0,0,.22); overflow: hidden;
+        resize: both; }
     #zdf-panel * { box-sizing: border-box; font-family: inherit; }
     #zdf-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
         background: #6dbe45; color: #fff; cursor: move; user-select: none; }
@@ -1843,9 +1966,10 @@
     #zdf-head button { background: rgba(255,255,255,.2); border: 0; color: #fff; width: 22px; height: 22px;
         border-radius: 5px; cursor: pointer; font-size: 14px; line-height: 1; }
     #zdf-head button:hover { background: rgba(255,255,255,.35); }
-    #zdf-body { padding: 11px; }
+    #zdf-body { padding: 11px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+    #zdf-head { flex: 0 0 auto; }
     #zdf-panel.zdf-collapsed #zdf-body { display: none; }
-    #zdf-paste { width: 100%; height: 128px; resize: vertical; padding: 7px 8px; border: 1px solid #cbd2d9;
+    #zdf-paste { width: 100%; height: clamp(72px, 16vh, 150px); resize: vertical; padding: 7px 8px; border: 1px solid #cbd2d9;
         border-radius: 6px; font-family: Consolas, "Courier New", monospace; font-size: 11.5px; white-space: pre; overflow-x: auto; }
     #zdf-paste:focus { outline: 2px solid #6dbe45; outline-offset: -1px; }
     .zdf-hint { color: #7b8794; font-size: 11px; margin: 5px 0 8px; }
@@ -1858,7 +1982,7 @@
     .zdf-btns button:disabled { opacity: .5; cursor: default; }
     .zdf-opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 11.5px; color: #52606d; }
     .zdf-opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-    #zdf-log { background: #12161c; color: #cbd5e0; border-radius: 6px; padding: 8px; height: 150px;
+    #zdf-log { background: #12161c; color: #cbd5e0; border-radius: 6px; padding: 8px; height: clamp(90px, 20vh, 200px);
         overflow-y: auto; font-family: Consolas, "Courier New", monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; }
     #zdf-log div { margin-bottom: 2px; }
     #zdf-log .ok { color: #7ee787; }
@@ -1881,6 +2005,16 @@
     #zdf-fab { position: fixed; top: 12px; right: 12px; z-index: 2147483600; display: none;
         background: #6dbe45; color: #fff; border: 0; border-radius: 20px; padding: 8px 14px;
         font: 600 12px "Segoe UI", system-ui, sans-serif; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+
+    @media (max-width: 560px) {
+        #zdf-panel { left: 8px; right: 8px; top: 8px; width: auto; max-height: calc(100vh - 16px); }
+        .zdf-btns button { flex: 1 1 45%; }
+        .zdf-file { flex-wrap: wrap; }
+    }
+    @media (max-height: 620px) {
+        #zdf-paste { height: 68px; }
+        #zdf-log { height: 84px; }
+    }
     input.zdf-touched { outline: 2px solid #6dbe45 !important; background: #eefbe7 !important; }
     tr.zdf-row-touched > td { background: #f4fcef !important; }
     `;

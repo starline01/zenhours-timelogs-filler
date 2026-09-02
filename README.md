@@ -136,12 +136,26 @@ Every sheet is classified before it's read, and the panel logs what it decided
 |---|---|---|
 | **column headers** | a header row naming Date + times **and** the guard | that row |
 | **personnel report** | `Personnel Name` / `DTR Summary Report`, `Time In 1..3` | the row |
-| **per-guard blocks** | `SECURITY GUARD:` / `ACCESS ID:` above each small table | the text above |
+| **per-guard blocks** | `ACTUAL TIME LOGS`, `NAME:`, `SECURITY GUARD:` above each small table | the text above |
 | **day-number blocks** | `INNITIAL IN`, `L.B OUT`, `C.B OUT`, dates as 1–31 | name + month/year above |
 | **headerless columns** | name · date · weekday · six punches, no header at all | column A |
 
 A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
 **planned shifts, not punches**, and refused rather than imported.
+
+**A sheet holding both is read correctly.** Many client DTRs put the planned
+roster at the top and the real punches (`ACTUAL TIME LOGS`) underneath, in the
+same sheet. The punches win; the schedule half is skipped with a note. Where the
+sheet names its store and cut-off, both appear in the log so an old period is
+obvious before you fill anything:
+
+```
+layout — Sheet1: per-guard blocks — RSC MAGNOLIA — AUGUST 16-31, 2026
+```
+
+Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
+sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
+`absent`) rather than guessed at.
 
 Messy cells are handled too: military integers (`1058`), military strings
 (`1053H`), Excel serials, real Date cells, `22;20` typed with a semicolon,
@@ -155,6 +169,12 @@ one person — but only when exactly one name matches, never on a tie. If the sa
 day appears twice, the row with more punches wins and is flagged.
 
 ### Overnight shifts
+
+A punch is only rolled when the result stays within a plausible shift length
+(18h). Without that cap, one mistyped punch — `15:07` keyed as `05:07` — rolls
+itself *and* drags every punch after it onto the next day, turning a 12-hour
+shift into a 36-hour one. Such a punch is now left on its own date and flagged
+`out-of-order punch` instead.
 
 A punch that falls *before* the one preceding it by more than six hours is taken
 to have crossed midnight, and is written to the **next day's date**. So a
@@ -272,6 +292,17 @@ sample row's HTML — which is what I need to adjust the column mapping.
 ---
 
 ## Testing
+
+`test/make-fixtures.py` regenerates the sample workbooks under `test/fixtures/`.
+They mirror the *shape* of real client DTRs — schedule above time logs, letter-
+per-cell day-offs, night shifts, a mistyped punch — with invented names, so the
+layouts stay covered without client data in the repo:
+
+```bash
+python test/make-fixtures.py
+```
+
+Real client files dropped into `test/` are git-ignored.
 
 `test/` holds a mock of the timelogs page that mirrors the real one (blank
 `--:--` grid, Edit → six inputs prefilled to `MM/DD/YYYY 12:00 AM`, Save/Cancel).
