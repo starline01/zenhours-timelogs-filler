@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.5.1
+// @version      1.6.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -136,7 +136,8 @@
     const EMPID_ALIASES = new Set([
         'empid', 'emp id', 'employee id', 'employeeid', 'id', 'access id', 'accessid',
         'access no', 'access number', 'access', 'emp no', 'employee no', 'employee number',
-        'badge', 'badge id', 'badge no', 'idno', 'id no'
+        'badge', 'badge id', 'badge no', 'idno', 'id no',
+        'enroll no', 'enrollno', 'enrollment no', 'enroll id', 'biometric id'
     ]);
     const NAME_ALIASES = new Set([
         'name', 'employee', 'employee name', 'employeename', 'guard', 'guard name',
@@ -265,7 +266,13 @@
     // that an out-of-order punch is not mistaken for a new day.
     const ROLL_HOURS = 6;
     // No real shift runs this long; beyond it, a backward punch is a typo.
-    const MAX_SPAN_HOURS = 18;
+    // Caps on how far a roll may stretch a shift. A punch in the MIDDLE of a row
+    // that needs a big roll is almost always a typo (15:07 keyed as 05:07), and
+    // rolling it drags everything after it onto the next day. The FINAL punch is
+    // different: it is what makes a shift long, and a guard on a double really
+    // can clock out 22 hours after clocking in.
+    const MAX_SPAN_HOURS = 18;        // a mid-row punch
+    const MAX_END_SPAN_HOURS = 24;    // the day's last punch
 
     /**
      * Walk a row's punches left to right and mark each one with how many days
@@ -277,20 +284,21 @@
      * the chain rather than dragging the rest of the row with it.
      */
     function applyOvernightRoll(times) {
+        const present = COLUMNS.filter((c) => times[c]);
         let prevAbs = null, firstAbs = null, overnight = false, outOfOrder = false;
-        for (const col of COLUMNS) {
+
+        present.forEach((col, idx) => {
             const t = times[col];
-            if (!t) continue;                       // gap: leave the chain alone
             let abs = t.h * 60 + t.m;
             let plus = 0;
+
             if (prevAbs !== null && abs < prevAbs && prevAbs - abs >= ROLL_HOURS * 60) {
                 let rolled = abs, steps = 0;
                 while (rolled < prevAbs) { rolled += 1440; steps++; }
-                // Refuse a roll that would stretch the shift past any plausible
-                // length. Without this, one mistyped punch (15:07 keyed as
-                // 05:07) rolls itself AND drags every punch after it onto the
-                // next day — a 12-hour shift read as 36 hours.
-                if (firstAbs === null || rolled - firstAbs <= MAX_SPAN_HOURS * 60) {
+                const span = firstAbs === null ? 0 : rolled - firstAbs;
+                const isLast = idx === present.length - 1;
+                const cap = (isLast ? MAX_END_SPAN_HOURS : MAX_SPAN_HOURS) * 60;
+                if (span <= cap) {
                     abs = rolled;
                     plus = steps;
                     overnight = true;
@@ -300,10 +308,11 @@
             } else if (prevAbs !== null && abs < prevAbs) {
                 outOfOrder = true;
             }
+
             t.plus = plus;
             if (firstAbs === null) firstAbs = abs;
             if (prevAbs === null || abs > prevAbs) prevAbs = abs;
-        }
+        });
         return { overnight, outOfOrder };
     }
 
@@ -1128,7 +1137,11 @@
             if (sh != null && sh > 0 && (sh < gross - brk - 1.5 || sh > gross + 1.5)) {
                 row.flags.push(`hours off: sheet says ${sh}, punches give ~${row.computedHours}`);
             }
-            if ((gross < 1 || gross > 16) && !row.flags.some((f) => /hours off/.test(f))) {
+            if (gross < 0) {
+                // A negative span means a punch is on the wrong day; say that
+                // plainly rather than reporting "-1.9 hours".
+                row.flags.push('Time Out is before Time In - check this row');
+            } else if ((gross < 1 || gross > 16) && !row.flags.some((f) => /hours off/.test(f))) {
                 row.flags.push(`check span ~${row.computedHours}h`);
             }
         }
@@ -1459,10 +1472,21 @@
     }
 
     // ── Layout E: our own template / any sheet with a named header row ────
+    // Biometric exports label every punch column just "Time In" / "Time Out"
+    // and repeat the pair once per break, so the six columns carry only two
+    // distinct names. Read positionally instead: a punch pair means in-then-out.
+    const PUNCH_SEQUENCE = {
+        1: ['time_in', 'time_out'],
+        2: ['time_in', 'lunch_out', 'lunch_in', 'time_out'],
+        3: ['time_in', 'lunch_out', 'lunch_in', 'break_out', 'break_in', 'time_out']
+    };
+
     function detectTableColumns(ws) {
         const rng = sheetRange(ws);
         for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 12); r++) {
             const cols = { idCol: -1, nameCol: -1, dateCol: -1, hoursCol: -1, timeCols: {}, headerRow: r };
+            const inCols = [], outCols = [];
+
             for (let c = rng.s.c; c <= rng.e.c; c++) {
                 const key = normKey(cellAt(ws, r, c));
                 if (!key) continue;
@@ -1471,8 +1495,31 @@
                 if (cols.dateCol < 0 && DATE_ALIASES.has(key)) { cols.dateCol = c; continue; }
                 if (DAY_ALIASES.has(key)) continue;
                 const col = HEADER_ALIASES[key];
-                if (col && cols.timeCols[col] === undefined) cols.timeCols[col] = c;
+                if (!col) continue;
+                if (col === 'time_in') inCols.push(c);
+                else if (col === 'time_out') outCols.push(c);
+                else if (cols.timeCols[col] === undefined) cols.timeCols[col] = c;
             }
+
+            const repeated = inCols.length > 1 || outCols.length > 1;
+            if (repeated && !Object.keys(cols.timeCols).length) {
+                // Pure in/out pairs: order them left to right and read the pairs
+                // in sequence, so the LAST Time Out is the day's Time Out rather
+                // than the first one encountered.
+                const ordered = inCols.concat(outCols).sort((a, b) => a - b);
+                const pairs = Math.min(Math.floor(ordered.length / 2), 3);
+                const seq = PUNCH_SEQUENCE[pairs];
+                if (seq) seq.forEach((name, i) => { if (ordered[i] != null) cols.timeCols[name] = ordered[i]; });
+            } else {
+                // Distinctly named columns: first occurrence of each wins.
+                if (inCols.length && cols.timeCols.time_in === undefined) cols.timeCols.time_in = inCols[0];
+                if (outCols.length && cols.timeCols.time_out === undefined) {
+                    // With named lunch/break columns present, the day's Time Out
+                    // is the rightmost "Time Out", never an earlier one.
+                    cols.timeCols.time_out = outCols[outCols.length - 1];
+                }
+            }
+
             // Claim the sheet only when it identifies the guard on the row itself.
             // Without that, identity lives in text around the table — which is
             // the stacked / day-number layouts' job, not this one.

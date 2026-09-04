@@ -153,7 +153,7 @@ the next while a workbook is loaded.
 ### Messy client DTRs
 
 Every sheet is classified before it's read, and the panel logs what it decided
-(`layout — Report: personnel report`). Five shapes are recognised:
+(`layout — Report: personnel report`). Six shapes are recognised:
 
 | Layout | Recognised by | Identity comes from |
 |---|---|---|
@@ -162,6 +162,7 @@ Every sheet is classified before it's read, and the panel logs what it decided
 | **per-guard blocks** | `ACTUAL TIME LOGS`, `NAME:`, `SECURITY GUARD:` above each small table | the text above |
 | **day-number blocks** | `INNITIAL IN`, `L.B OUT`, `C.B OUT`, dates as 1–31 | name + month/year above |
 | **headerless columns** | name · date · weekday · six punches, no header at all | column A |
+| **biometric export** | repeated `Time In` / `Time Out` pairs, `Enroll No` | the row |
 
 A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
 **planned shifts, not punches**, and refused rather than imported.
@@ -179,6 +180,12 @@ layout — Sheet1: per-guard blocks — RSC MAGNOLIA — AUGUST 16-31, 2026
 Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
 sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
 `absent`) rather than guessed at.
+
+**Biometric exports** label every punch column just `Time In` / `Time Out` and
+repeat the pair once per break, so six columns carry only two distinct names.
+Those are read positionally — in, out, in, out, in, out — so the day's Time Out
+is the *last* one, not the first. Read by name instead, a 10:05 PM Time Out came
+back as the 12:03 PM lunch break and the breaks vanished entirely.
 
 **Real Excel time cells are read in UTC**, the way SheetJS builds them. Read with
 local getters instead, every such time shifts by the machine's timezone offset —
@@ -198,11 +205,21 @@ day appears twice, the row with more punches wins and is flagged.
 
 ### Overnight shifts
 
-A punch is only rolled when the result stays within a plausible shift length
-(18h). Without that cap, one mistyped punch — `15:07` keyed as `05:07` — rolls
+A punch is only rolled when the result stays within a plausible shift length,
+and the cap depends on **where** the punch sits:
+
+- a punch in the **middle** of a row may stretch the shift to 18h
+- the **final** punch may stretch it to 24h
+
+That distinction matters. One mistyped punch — `15:07` keyed as `05:07` — rolls
 itself *and* drags every punch after it onto the next day, turning a 12-hour
-shift into a 36-hour one. Such a punch is now left on its own date and flagged
-`out-of-order punch` instead.
+shift into a 36-hour one; the mid-row cap stops that, leaving the punch on its
+own date flagged `out-of-order punch`. But a guard on a double really can clock
+out 22 hours after clocking in, and that is always the *last* punch, so the
+looser cap lets a genuine overnight through.
+
+A negative span is reported as `Time Out is before Time In` rather than as
+"-1.9 hours".
 
 A punch that falls *before* the one preceding it by more than six hours is taken
 to have crossed midnight, and is written to the **next day's date**. So a
