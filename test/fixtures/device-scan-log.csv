@@ -1,0 +1,11 @@
+NUM, Time, User ID, User Name, Department, Terminal ID, Terminal Name, Auth Type, Auth Result, Function Key
+1," ""8/31/2026 9:21:54 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+2," ""8/31/2026 9:21:54 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+3," ""8/31/2026 4:41:20 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+4," ""8/31/2026 4:10:48 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+5," ""8/31/2026 12:17:37 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+6," ""8/31/2026 11:47:20 AM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+7," ""8/31/2026 8:12:46 AM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+8," ""8/30/2026 6:27:11 PM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+9," ""8/30/2026 8:25:45 AM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,
+10," ""8/30/2026 11:39:24 AM"""," ""00120952"""," ""TEST GUARD ONE""", ,469," ""TEST TERMINAL""", Fingerprint (1:N),Success,

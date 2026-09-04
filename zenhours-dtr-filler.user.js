@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.6.1
+// @version      1.7.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -137,12 +137,14 @@
         'empid', 'emp id', 'employee id', 'employeeid', 'id', 'access id', 'accessid',
         'access no', 'access number', 'access', 'emp no', 'employee no', 'employee number',
         'badge', 'badge id', 'badge no', 'idno', 'id no',
-        'enroll no', 'enrollno', 'enrollment no', 'enroll id', 'biometric id'
+        'enroll no', 'enrollno', 'enrollment no', 'enroll id', 'biometric id',
+        'user id', 'userid'
     ]);
     const NAME_ALIASES = new Set([
         'name', 'employee', 'employee name', 'employeename', 'guard', 'guard name',
         'full name', 'fullname', 'personnel', 'staff',
         'personnel name', 'name of employee', 'name of guard', 'guard fullname',
+        'user name', 'username',
         'employee fullname', 'complete name'
     ]);
     const DATE_ALIASES = new Set(['date', 'log date', 'work date', 'day date']);
@@ -1583,6 +1585,102 @@
         return out;
     }
 
+    // ── Layout G: raw device event log — one row per fingerprint scan ────
+    //  A biometric terminal exports every punch as its own row, newest first,
+    //  with a full timestamp. There are no time COLUMNS at all: the six punches
+    //  of a day are six separate rows, sometimes logged twice by the device.
+    //  So group by guard + date, drop repeats, sort, and read the punches in
+    //  order — first is Time In, last is Time Out.
+
+    /** "8/31/2026 9:21:54 PM" (quotes and padding included) -> { date, time } */
+    function splitDateTime(raw) {
+        const s = norm(raw).replace(/^[\s"']+/, '').replace(/[\s"']+$/, '');
+        const m = s.match(/^(\S+)[\sT]+(.+)$/);
+        if (!m) return null;
+        const date = parseDate(m[1], null);
+        const time = parseTime(m[2]);
+        if (!date || !time) return null;
+        const year = +date.slice(0, 4);
+        return (year >= 2000 && year <= 2100) ? { date, time } : null;
+    }
+
+    /** The column holding full timestamps, found by content. */
+    function findDateTimeColumn(ws, rng) {
+        let best = null;
+        for (let c = rng.s.c; c <= rng.e.c; c++) {
+            let hits = 0;
+            for (let r = rng.s.r + 1; r <= Math.min(rng.e.r, rng.s.r + 40); r++) {
+                if (splitDateTime(cellAt(ws, r, c))) hits++;
+            }
+            if (hits >= 5 && (!best || hits > best.hits)) best = { c, hits };
+        }
+        return best ? best.c : null;
+    }
+
+    const stripQuotes = (v) => norm(v).replace(/^[\s"']+/, '').replace(/[\s"']+$/, '');
+
+    /** Group scan rows into one row per guard per day. */
+    function eventLogGroups(ws) {
+        const rng = sheetRange(ws);
+        const dtCol = findDateTimeColumn(ws, rng);
+        if (dtCol == null) return null;
+
+        let nameCol = -1, idCol = -1;
+        for (let c = rng.s.c; c <= rng.e.c; c++) {
+            const key = normKey(cellAt(ws, rng.s.r, c));
+            if (nameCol < 0 && NAME_ALIASES.has(key)) nameCol = c;
+            if (idCol < 0 && EMPID_ALIASES.has(key)) idCol = c;
+        }
+
+        const groups = new Map();
+        for (let r = rng.s.r + 1; r <= rng.e.r; r++) {
+            const dt = splitDateTime(cellAt(ws, r, dtCol));
+            if (!dt) continue;
+            const name = nameCol >= 0 ? stripQuotes(cellAt(ws, r, nameCol)) : '';
+            const id = idCol >= 0 ? stripQuotes(cellAt(ws, r, idCol)) : '';
+            const key = `${id}|${name}|${dt.date}`;
+            if (!groups.has(key)) groups.set(key, { id, name, date: dt.date, seen: new Set(), times: [] });
+            const g = groups.get(key);
+            const stamp = pad2(dt.time.h) + ':' + pad2(dt.time.m);
+            if (g.seen.has(stamp)) continue;            // device logged the same scan twice
+            g.seen.add(stamp);
+            g.times.push(dt.time);
+        }
+        return groups.size ? groups : null;
+    }
+
+    /** An event log has several scans for the same guard on the same day. */
+    function looksLikeEventLog(ws) {
+        const groups = eventLogGroups(ws);
+        if (!groups) return false;
+        for (const g of groups.values()) if (g.times.length >= 3) return true;
+        return false;
+    }
+
+    function parseEventLog(ws) {
+        const groups = eventLogGroups(ws);
+        if (!groups) return [];
+        const out = [];
+        for (const g of groups.values()) {
+            g.times.sort((a, b) => (a.h * 60 + a.m) - (b.h * 60 + b.m));
+            const seq = PUNCH_SEQUENCE[Math.min(Math.floor(g.times.length / 2), 3)];
+            const raw = {};
+            const flags = [];
+            if (seq && g.times.length === seq.length) {
+                seq.forEach((col, i) => { raw[col] = g.times[i]; });
+            } else {
+                // An odd number of scans cannot be paired into breaks. Anchor
+                // the ends, which are the two that matter, and say so rather
+                // than guessing which middle punch is which.
+                raw.time_in = g.times[0];
+                if (g.times.length > 1) raw.time_out = g.times[g.times.length - 1];
+                flags.push(`${g.times.length} scans that day - only Time In and Time Out were set`);
+            }
+            out.push(makeRow(g.id, g.name, g.date, raw, null, flags));
+        }
+        return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+
     // ── The router ───────────────────────────────────────────────────────
     /**
      * Decide what a sheet is. Scans the WHOLE sheet, because a client workbook
@@ -1609,6 +1707,7 @@
 
         let format = 'unknown';
         if (detectTableColumns(ws)) format = 'table';
+        else if (looksLikeEventLog(ws)) format = 'eventlog';
         else if (sawFlat) format = 'flat';
         else if (sawDayNumber) format = 'daynumber';
         else if (sawStacked) format = 'stacked';
@@ -1621,6 +1720,7 @@
         const { format, sawSchedule } = classifySheet(ws);
         let rows = [];
         if (format === 'table') rows = parseTable(ws, detectTableColumns(ws), sheetName);
+        else if (format === 'eventlog') rows = parseEventLog(ws);
         else if (format === 'flat') rows = parseFlatReport(ws);
         else if (format === 'stacked') rows = parseStackedBlocks(ws, sheetName);
         else if (format === 'daynumber') rows = parseDayNumberBlocks(ws, fallbackYear);
@@ -1631,6 +1731,7 @@
     const FORMAT_LABELS = {
         table: 'column headers', flat: 'personnel report', stacked: 'per-guard blocks',
         daynumber: 'day-number blocks', positional: 'headerless columns',
+        eventlog: 'device scan log',
         schedule: 'schedule (not punches)', unknown: 'unrecognised', empty: 'empty'
     };
 
@@ -1760,10 +1861,10 @@
                         return;
                     }
                     if (isCsv) {
-                        const rows = String(reader.result).split(/\r?\n/)
-                            .filter((l) => norm(l) !== '')
-                            .map((l) => splitFields(l));
-                        resolve([{ name: file.name, ws: XLSX.utils.aoa_to_sheet(rows) }]);
+                        // SheetJS understands real CSV quoting; splitting on
+                        // commas by hand mangles any quoted field containing one.
+                        const wb = XLSX.read(String(reader.result), { type: 'string', raw: true });
+                        resolve(wb.SheetNames.map((name) => ({ name: file.name, ws: wb.Sheets[name] })));
                         return;
                     }
                     // cellDates keeps real times as Date objects; raw values are

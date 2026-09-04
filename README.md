@@ -153,7 +153,7 @@ the next while a workbook is loaded.
 ### Messy client DTRs
 
 Every sheet is classified before it's read, and the panel logs what it decided
-(`layout — Report: personnel report`). Six shapes are recognised:
+(`layout — Report: personnel report`). Seven shapes are recognised:
 
 | Layout | Recognised by | Identity comes from |
 |---|---|---|
@@ -163,6 +163,7 @@ Every sheet is classified before it's read, and the panel logs what it decided
 | **day-number blocks** | `INNITIAL IN`, `L.B OUT`, `C.B OUT`, dates as 1–31 | name + month/year above |
 | **headerless columns** | name · date · weekday · six punches, no header at all | column A |
 | **biometric export** | repeated `Time In` / `Time Out` pairs, `Enroll No` | the row |
+| **device scan log** | one row per punch with a full timestamp, several per day | the row |
 
 A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
 **planned shifts, not punches**, and refused rather than imported.
@@ -180,6 +181,13 @@ layout — Sheet1: per-guard blocks — RSC MAGNOLIA — AUGUST 16-31, 2026
 Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
 sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
 `absent`) rather than guessed at.
+
+**A raw device scan log has no time columns at all.** A fingerprint terminal
+exports every punch as its own row with a full timestamp — six rows make one
+working day, and the device often logs the same scan twice. Those are grouped by
+guard and date, de-duplicated, sorted, and read in order: first scan is Time In,
+last is Time Out. A day with an odd number of scans cannot be paired into breaks,
+so only Time In and Time Out are set and the row says how many scans it saw.
 
 **An unlabelled date column is found by its contents.** Real DTRs routinely
 leave that header blank — naming the weekday (`Transaction Day`) while the date

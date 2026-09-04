@@ -10,3 +10,5 @@ desktop.ini
 test/*.xlsx
 !test/fixtures/*.xlsx   # generated fixtures ARE tracked
 test/*.xls
+test/*.csv
+!test/fixtures/*.csv
