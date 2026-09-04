@@ -181,6 +181,12 @@ Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
 sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
 `absent`) rather than guessed at.
 
+**An unlabelled date column is found by its contents.** Real DTRs routinely
+leave that header blank — naming the weekday (`Transaction Day`) while the date
+sits in a blank-headed column beside it. Read by header alone, every row in such
+a sheet is discarded. Columns of Excel *time* values are excluded from that
+search, since those are Dates too (Excel puts them on 1899-12-31).
+
 **Biometric exports** label every punch column just `Time In` / `Time Out` and
 repeat the pair once per break, so six columns carry only two distinct names.
 Those are read positionally — in, out, in, out, in, out — so the day's Time Out

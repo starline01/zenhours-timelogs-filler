@@ -76,11 +76,12 @@ document.title = `Timelogs — ${WHO.name}`;
 
 // ?d1=16&d2=31 changes the searched range, like a different cut-off
 const D1 = +(params.get('d1') || 1), D2 = +(params.get('d2') || 14);
-document.querySelectorAll('.toolbar input')[0].value = `08/${pad(D1)}/2026`;
-document.querySelectorAll('.toolbar input')[1].value = `08/${pad(D2)}/2026`;
+const M = pad(+(params.get('m') || 8));        // ?m=5 for a May cut-off
+document.querySelectorAll('.toolbar input')[0].value = `${M}/${pad(D1)}/2026`;
+document.querySelectorAll('.toolbar input')[1].value = `${M}/${pad(D2)}/2026`;
 
 for (let day = D2; day >= D1; day--) {        // page lists newest first
-  const iso = `2026-08-${pad(day)}`;
+  const iso = `2026-${M}-${pad(day)}`;
   const tr = document.createElement('tr');
   tr.innerHTML =
     (OFFSET ? '<td class="rowid" style="width:4px;padding:0"></td>'.repeat(OFFSET) : '') +

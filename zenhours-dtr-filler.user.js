@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.6.0
+// @version      1.6.1
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -141,10 +141,12 @@
     ]);
     const NAME_ALIASES = new Set([
         'name', 'employee', 'employee name', 'employeename', 'guard', 'guard name',
-        'full name', 'fullname', 'personnel', 'staff'
+        'full name', 'fullname', 'personnel', 'staff',
+        'personnel name', 'name of employee', 'name of guard', 'guard fullname',
+        'employee fullname', 'complete name'
     ]);
     const DATE_ALIASES = new Set(['date', 'log date', 'work date', 'day date']);
-    const DAY_ALIASES = new Set(['day', 'weekday', 'day of week', 'dow']);
+    const DAY_ALIASES = new Set(['day', 'weekday', 'day of week', 'dow', 'transaction day', 'day name']);
 
     const BLANK_MARKERS = ['--:--', '-- : --', '--', '-', '—', '–', '', 'n/a', 'na', 'none'];
 
@@ -1190,7 +1192,8 @@
         }
         const pick = (names) => { for (const n of names) if (col[n] != null) return col[n]; return null; };
         const cName = pick(NAMEH);
-        const cDate = pick(['TRANSACTION DATE', 'DATE', 'LOG DATE']);
+        let cDate = pick(['TRANSACTION DATE', 'DATE', 'LOG DATE']);
+        if (cDate == null) cDate = findDateColumnByContent(ws, hr, rng);
         const cId = pick(['ACCESS ID', 'ACCESS ID #', 'EMPLOYEE ID', 'EMP ID']);
         const cHours = pick(['NET HOURS RENDERED', 'GROSS HOURS RENDERED', 'NO. OF HOURS RENDERED',
             'NO. OF HOURS', 'TOTAL HOURS', 'HRS RENDERED']);
@@ -1220,6 +1223,30 @@
             out.push(makeRow(id, name, date, raw, cellAt(ws, r, cHours), []));
         }
         return out;
+    }
+
+    /**
+     * Find the date column by looking at the DATA rather than the header.
+     * Real DTRs routinely leave that column unlabelled — the header names the
+     * weekday ("Transaction Day") and the date sits in a blank-headed column
+     * beside it — which otherwise throws away every row in the sheet.
+     *
+     * Time-only cells are Dates too (Excel puts them on 1899-12-31), so only
+     * years that look like real dates are counted.
+     */
+    function findDateColumnByContent(ws, headerRow, rng) {
+        let best = null;
+        for (let c = rng.s.c; c <= rng.e.c; c++) {
+            let hits = 0;
+            for (let r = headerRow + 1; r <= Math.min(rng.e.r, headerRow + 15); r++) {
+                const iso = parseDate(cellAt(ws, r, c), null);
+                if (!iso) continue;
+                const year = +iso.slice(0, 4);
+                if (year >= 2000 && year <= 2100) hits++;
+            }
+            if (hits >= 3 && (!best || hits > best.hits)) best = { c, hits };
+        }
+        return best ? best.c : null;
     }
 
     /**
@@ -1519,6 +1546,9 @@
                     cols.timeCols.time_out = outCols[outCols.length - 1];
                 }
             }
+
+            // The date column is often unlabelled; find it by content instead.
+            if (cols.dateCol < 0) cols.dateCol = findDateColumnByContent(ws, r, rng) ?? -1;
 
             // Claim the sheet only when it identifies the guard on the row itself.
             // Without that, identity lives in text around the table — which is
