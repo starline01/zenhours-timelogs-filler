@@ -180,6 +180,11 @@ Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
 sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
 `absent`) rather than guessed at.
 
+**Real Excel time cells are read in UTC**, the way SheetJS builds them. Read with
+local getters instead, every such time shifts by the machine's timezone offset —
+a `20:00` Time In came back as `04:00` at UTC+8. Files whose times are text
+(`0737H`) were never affected, which is why this hid for so long.
+
 Messy cells are handled too: military integers (`1058`), military strings
 (`1053H`), Excel serials, real Date cells, `22;20` typed with a semicolon,
 `0UT` mis-typed for `OUT` in a header, and rest markers (`REST`, `NO DUTY`,

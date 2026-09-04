@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.5.0
+// @version      1.5.1
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -221,7 +221,10 @@
      * plus Date objects and raw Excel numbers straight from a cell.
      */
     function parseTime(raw) {
-        if (raw instanceof Date && !isNaN(raw)) return { h: raw.getHours(), m: raw.getMinutes(), plus: 0 };
+        // SheetJS builds cell Dates in UTC (a 20:00 cell is 1899-12-31T20:00Z),
+        // so LOCAL getters shift every time by the machine's offset — 20:00
+        // read as 04:00 here at UTC+8. Always read these in UTC.
+        if (raw instanceof Date && !isNaN(raw)) return { h: raw.getUTCHours(), m: raw.getUTCMinutes(), plus: 0 };
         if (typeof raw === 'number') return numberToTime(raw);
 
         let s = norm(raw).toLowerCase();
@@ -324,7 +327,9 @@
      */
     function parseDate(raw, fallbackYear) {
         if (raw instanceof Date && !isNaN(raw)) {
-            return `${raw.getFullYear()}-${pad2(raw.getMonth() + 1)}-${pad2(raw.getDate())}`;
+            // UTC for the same reason as parseTime: west of UTC, a midnight
+            // date cell read locally lands on the previous day.
+            return `${raw.getUTCFullYear()}-${pad2(raw.getUTCMonth() + 1)}-${pad2(raw.getUTCDate())}`;
         }
         const s = norm(raw);
         if (!s) return null;
@@ -1230,20 +1235,27 @@
         };
         grab(/^\s*STORE\s*:?\s*(.*)$/i, 'store');
         grab(/^\s*CUT ?OFF\s*:?\s*(.*)$/i, 'period');
+        if (!out.period) grab(/PERIOD COVERED\s*(?:OF)?\s*:?\s*(.*)$/i, 'period');
 
-        // Sheets with no STORE: label often print the branch on the line just
-        // beneath the agency banner instead.
+        // Sheets with no STORE: label print the branch under the agency banner,
+        // often on the same line as the period:
+        //   "ROBINSONS TOWNVILLE CABANATUAN, PERIOD COVERED AUGUST 16 - 31, 2026"
         if (!out.store) {
+            const NOT_A_STORE = /AGENCY|STARLINE|CUT ?OFF|^DATE$|ACTUAL|NAME OF|SECURITY GUARD|^NAME\s*:/i;
             for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 8) && !out.store; r++) {
                 for (let c = rng.s.c; c <= Math.min(rng.e.c, rng.s.c + 2); c++) {
                     if (!/AGENCY|STARLINE/i.test(String(cellAt(ws, r, c) || ''))) continue;
-                    for (let d = r + 1; d <= r + 2; d++) {
+                    for (let d = r + 1; d <= r + 3; d++) {
                         const v = norm(cellAt(ws, d, rng.s.c));
-                        if (v && !/AGENCY|STARLINE|CUT ?OFF|^DATE$|ACTUAL/i.test(v)
-                            && !/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(v)) {
+                        if (!v || NOT_A_STORE.test(v)) continue;
+                        const split = v.match(/^(.*?)[,\s]*PERIOD COVERED\s*:?\s*(.*)$/i);
+                        if (split) {
+                            out.store = split[1].replace(/[,\s]+$/, '').trim();
+                            if (!out.period && split[2].trim()) out.period = norm(split[2]).replace(/^OF\s+/i, '');
+                        } else if (!/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(v)) {
                             out.store = v.split('/')[0].trim();
-                            break;
                         }
+                        if (out.store) break;
                     }
                     if (out.store) break;
                 }
