@@ -4,7 +4,8 @@ A Tampermonkey userscript that fills the Zenhours timelogs table from a block of
 timelogs pasted out of Excel. It finds each date's row, clicks **Edit**, and types
 the times into the six time fields.
 
-**It never clicks Save.** You review the highlighted values and save each row yourself.
+**By default it never clicks Save.** You review the highlighted values and save each
+row yourself. Auto-save is available as an opt-in — see below.
 
 ---
 
@@ -88,6 +89,28 @@ way everywhere else. To restrict it to timelogs pages only, swap both lines for:
 
 **Undo fill** puts every field the script touched back to its original value
 (works while the rows are still open in edit mode).
+
+### Auto-save
+
+By default the script fills and stops, and you click Save. Ticking **Save each
+row automatically** commits each row as it is filled — useful once you trust a
+client's file and are working through a whole roster.
+
+What it does differently, and why:
+
+- **Blanks are cleared, not left at `12:00 AM`.** Untouched fields keep Zenoras'
+  prefill, and saving that records a real midnight punch on a guard who simply
+  had no lunch break — wrong hours, with no review step to catch it. Auto-save
+  therefore clears them and says so in the log.
+- **A row is only saved if every value meant for it went in.** If a column had
+  nowhere to go — an unreadable OCR cell, an unparseable time — the row is left
+  open and listed under `not saved` for you to finish by hand.
+- **Each save is confirmed** by waiting for the row to leave edit mode. A Save
+  that never completes is reported, not counted.
+- **Undo stops working** for rows already committed. The log warns before the
+  run starts.
+- **Test 1st day never auto-saves**, whatever the checkbox says — it exists to
+  let you check one row before committing anything.
 
 ---
 
@@ -258,6 +281,7 @@ working without it, so saving the sheet as CSV is the fallback.
 | Only fill columns that are blank (`--:--`) | on | Never overwrites a time already saved in Zenhours |
 | Click Edit automatically | on | Off = only fills rows you already opened yourself |
 | Clear the field when my cell is blank/dash | off | On = empties the field instead of leaving `12:00 AM` |
+| Save each row automatically | **off** | On = commits each row to Zenoras as it is filled. No review, no undo. |
 
 ---
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.4.1
+// @version      1.5.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -369,6 +369,14 @@
             let month = a, day = b;
             if (a > 12 && b <= 12) { month = b; day = a; }
             return `${fallbackYear}-${pad2(month)}-${pad2(day)}`;
+        }
+
+        // Last resort: whatever the browser itself recognises ("August 1, 2026").
+        // Guarded to strings carrying both letters and digits, so a stray number
+        // or a bare time can never become a date.
+        if (/[a-z]{3}/i.test(s) && /[0-9]/.test(s)) {
+            const d = new Date(s);
+            if (!isNaN(d)) return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
         }
         return null;
     }
@@ -827,6 +835,28 @@
         return null;
     }
 
+    /**
+     * Click the row's Save and wait for Zenoras to commit it — the row leaving
+     * edit mode is the confirmation. Returns false if Save is missing or the
+     * row never closes, so a silent failure is never reported as a save.
+     */
+    async function saveRow(iso, timeoutMs = 8000) {
+        let tr = indexRows().get(iso);
+        if (!tr) return false;
+        if (!isEditing(tr)) return true;                 // already committed
+        const save = findControl(tr, 'Save');
+        if (!save) return false;
+        save.click();
+
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            await sleep(150);
+            tr = indexRows().get(iso);
+            if (tr && !isEditing(tr)) return true;
+        }
+        return false;
+    }
+
     // =====================================================================
     //  THE FILL RUN
     // =====================================================================
@@ -836,7 +866,8 @@
     async function runFill(entries, opts, log) {
         undoStack = [];
         let filledRows = 0, filledFields = 0, missingRows = 0, skipped = 0, blanksLeft = 0;
-        let overnightFields = 0;
+        let overnightFields = 0, savedRows = 0;
+        const notSaved = [];
         let reportedStrategy = false;
 
         for (const entry of entries) {
@@ -929,10 +960,28 @@
                 blanksLeft += leftAlone.length;
             }
 
+            // Auto-save, when asked for. A row is only committed if every value
+            // meant for it actually went in: a column the source could not give
+            // us (unreadable OCR cell, unparseable time) would otherwise be
+            // saved as the prefilled 12:00 AM, which reads as a real punch.
+            if (opts.autoSave && touched) {
+                const wanted = COLUMNS.filter((c) => entry.times[c]).length;
+                const written = COLUMNS.filter((c) => entry.times[c] && inputs[c]).length;
+                if (written < wanted) {
+                    notSaved.push(`${entry.date} (a value had nowhere to go)`);
+                } else if (await saveRow(entry.date)) {
+                    savedRows++;
+                    undoStack = undoStack.filter((u) => u.input.isConnected);   // saved rows can no longer be undone
+                } else {
+                    notSaved.push(`${entry.date} (Save did not complete)`);
+                }
+                await sleep(opts.saveDelay);
+            }
+
             await sleep(opts.delay);
         }
 
-        return { filledRows, filledFields, missingRows, skipped, blanksLeft, overnightFields };
+        return { filledRows, filledFields, missingRows, skipped, blanksLeft, overnightFields, savedRows, notSaved };
     }
 
     function undoFill(log) {
@@ -1181,6 +1230,25 @@
         };
         grab(/^\s*STORE\s*:?\s*(.*)$/i, 'store');
         grab(/^\s*CUT ?OFF\s*:?\s*(.*)$/i, 'period');
+
+        // Sheets with no STORE: label often print the branch on the line just
+        // beneath the agency banner instead.
+        if (!out.store) {
+            for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 8) && !out.store; r++) {
+                for (let c = rng.s.c; c <= Math.min(rng.e.c, rng.s.c + 2); c++) {
+                    if (!/AGENCY|STARLINE/i.test(String(cellAt(ws, r, c) || ''))) continue;
+                    for (let d = r + 1; d <= r + 2; d++) {
+                        const v = norm(cellAt(ws, d, rng.s.c));
+                        if (v && !/AGENCY|STARLINE|CUT ?OFF|^DATE$|ACTUAL/i.test(v)
+                            && !/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(v)) {
+                            out.store = v.split('/')[0].trim();
+                            break;
+                        }
+                    }
+                    if (out.store) break;
+                }
+            }
+        }
         return out;
     }
 
@@ -1663,17 +1731,22 @@
             }
             const tokens = normKey(emp.name).split(' ').filter((t) => t.length >= 3);
             const matched = tokens.filter((t) => new RegExp(`\\b${t}\\b`).test(text));
-            if (tokens.length && matched.length) {
-                score += matched.length * 10;
-                if (matched.length === tokens.length) score += 10;
+            // Every name token must appear on the page, not merely some of them.
+            // Two guards sharing a surname would otherwise both "match" on a
+            // partial overlap, leaving a tie-break to pick one of them.
+            if (tokens.length >= 2 && matched.length === tokens.length) {
+                score += 60;
                 why.push(`name "${matched.join(' ')}"`);
+            } else if (matched.length) {
+                score += 10;                                             // partial: never enough alone
+                why.push(`part of the name "${matched.join(' ')}"`);
             }
             return { emp, score, why };
         }).sort((a, b) => b.score - a.score);
 
         const best = scored[0];
         const runnerUp = scored[1];
-        if (!best || best.score < 20) return null;                       // too weak
+        if (!best || best.score < 60) return null;                       // too weak to act on
         if (runnerUp && runnerUp.score === best.score) return null;      // ambiguous
         return { employee: best.emp, reason: best.why.join(' + ') };
     }
@@ -1982,6 +2055,7 @@
     .zdf-btns button:disabled { opacity: .5; cursor: default; }
     .zdf-opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 11.5px; color: #52606d; }
     .zdf-opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .zdf-opts label.zdf-danger { color: #b45309; font-weight: 600; }
     #zdf-log { background: #12161c; color: #cbd5e0; border-radius: 6px; padding: 8px; height: clamp(90px, 20vh, 200px);
         overflow-y: auto; font-family: Consolas, "Courier New", monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; }
     #zdf-log div { margin-bottom: 2px; }
@@ -2065,6 +2139,7 @@
                     <label><input type="checkbox" id="zdf-onlyblank" checked> Only fill columns that are blank (--:--)</label>
                     <label><input type="checkbox" id="zdf-openedit" checked> Click Edit automatically</label>
                     <label><input type="checkbox" id="zdf-clearblanks"> Clear the field when my cell is blank/dash</label>
+                    <label class="zdf-danger"><input type="checkbox" id="zdf-autosave"> Save each row automatically (no review, clears blanks)</label>
                 </div>
                 <div id="zdf-log"></div>
                 <div id="zdf-status">Ready.</div>
@@ -2083,6 +2158,7 @@
         if (settings.onlyBlank === false) $id('zdf-onlyblank').checked = false;
         if (settings.openEdit === false) $id('zdf-openedit').checked = false;
         if (settings.clearBlanks === true) $id('zdf-clearblanks').checked = true;
+        if (settings.autoSave === true) $id('zdf-autosave').checked = true;
 
         // Only restore a remembered paste in manual mode. With a workbook loaded
         // the box must always be (re)filled from the employee matched to THIS
@@ -2106,6 +2182,7 @@
                 onlyBlank: $id('zdf-onlyblank').checked,
                 openEdit: $id('zdf-openedit').checked,
                 clearBlanks: $id('zdf-clearblanks').checked,
+                autoSave: $id('zdf-autosave').checked,
                 // Never carry one employee's times to the next page (see above).
                 paste: roster ? '' : $id('zdf-paste').value.slice(0, 20000)
             });
@@ -2345,12 +2422,25 @@
             if (!entries.length) { log('No rows parsed.', 'err'); status('Nothing to fill.'); return; }
 
             const list = limitToFirst ? entries.slice(0, 1) : entries;
+            const autoSave = $id('zdf-autosave').checked && !limitToFirst;
             const opts = {
                 onlyBlank: $id('zdf-onlyblank').checked,
                 openEdit: $id('zdf-openedit').checked,
-                clearBlanks: $id('zdf-clearblanks').checked,
-                delay: 120
+                // Auto-save forces blanks to be cleared. Left alone they keep
+                // Zenoras' prefilled 12:00 AM, and saving that records a real
+                // midnight punch on a guard who simply had no lunch break —
+                // wrong hours, and no review step to catch it.
+                clearBlanks: $id('zdf-clearblanks').checked || autoSave,
+                autoSave,
+                delay: 120,
+                saveDelay: 250
             };
+            if (opts.autoSave) {
+                log('Auto-save is ON — each row is committed to Zenoras as it is filled. Undo will not be possible.', 'warn');
+                if (!$id('zdf-clearblanks').checked) {
+                    log('Columns with no value are being CLEARED rather than saved as 12:00 AM.', 'warn');
+                }
+            }
             if (!opts.openEdit) log('Auto-Edit is off — only rows already in edit mode will fill.', 'warn');
 
             const buttons = panel.querySelectorAll('.zdf-btns button');
@@ -2375,8 +2465,14 @@
                 if (r.overnightFields) {
                     log(`${r.overnightFields} overnight punch(es) were dated to the following day — check those rows before saving.`, 'warn');
                 }
-                log('Nothing was saved — review the highlighted inputs, then click Save on each row.', 'info');
-                status(`Filled ${r.filledRows} row(s). Click Save yourself.`);
+                if (opts.autoSave) {
+                    log(`Saved ${r.savedRows} of ${r.filledRows} row(s) to Zenoras.`, r.savedRows === r.filledRows ? 'ok' : 'warn');
+                    r.notSaved.forEach((n) => log(`  ! not saved: ${n} — open that row and finish it by hand`, 'warn'));
+                    status(`Filled ${r.filledRows}, saved ${r.savedRows}.`);
+                } else {
+                    log('Nothing was saved — review the highlighted inputs, then click Save on each row.', 'info');
+                    status(`Filled ${r.filledRows} row(s). Click Save yourself.`);
+                }
 
                 // Track progress through the roster so you can pick up where you left off.
                 const emp = selectedEmployee();
