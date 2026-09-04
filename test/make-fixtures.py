@@ -83,6 +83,57 @@ def stacked_with_schedule(path):
     return path
 
 
+def _main():
+    print('wrote', stacked_with_schedule(os.path.join(HERE, 'fixtures', 'stacked-with-schedule.xlsx')))
+    print('wrote', roster_matrix(os.path.join(HERE, 'fixtures', 'roster-matrix.xlsx')))
+
+
+def roster_matrix(path):
+    """Wide roster grid: guards down, days across, IN/OUT per day.
+
+    Mirrors a detachment roster — a DS/NS shift column, 'X' and posting
+    markers, names in a merged column beside the row numbers, and a second
+    sheet whose title misspells the month so it has to come from elsewhere.
+    """
+    from openpyxl import Workbook
+    import datetime
+    wb = Workbook()
+
+    def sheet(ws, title, staff):
+        ws['A1'] = title
+        ws['A3'], ws['C3'] = 'NAME OF PERSONNEL', 'SHIFT'
+        for i, day in enumerate(range(16, 21)):
+            ws.cell(row=3, column=4 + i * 2, value=day)
+            ws.cell(row=4, column=4 + i * 2, value='IN')
+            ws.cell(row=4, column=5 + i * 2, value='OUT')
+        for gi, (name, shift, days) in enumerate(staff):
+            r = 5 + gi * 2
+            ws.cell(row=r, column=1, value=gi + 1)      # row number, NOT the name
+            ws.cell(row=r, column=2, value=name)
+            ws.cell(row=r, column=3, value=shift)
+            for i, pair in enumerate(days):
+                a, b = pair
+                ws.cell(row=r, column=4 + i * 2, value=a)
+                ws.cell(row=r, column=5 + i * 2, value=b)
+
+    t = datetime.time
+    ws1 = wb.active
+    ws1.title = '0930H-2130H'
+    sheet(ws1, 'TEST MALL: August 16-31, 2026    DAY SHIFT', [
+        ('DAY GUARD ONE', 'DS', [(t(8, 32), t(21, 40)), (t(8, 38), t(21, 44)),
+                                 ('X', 'X'), ('BRICKSTONE ', 'BRICKSTONE '), (t(8, 25), t(21, 34))]),
+        ('NIGHT ON DAYSHEET', 'NS', [(t(20, 10), t(9, 29)), (t(20, 19), t(9, 34)),
+                                     (t(20, 36), t(9, 34)), ('X', 'X'), ('X', 'X')]),
+    ])
+    ws2 = wb.create_sheet('2130H-0930H')
+    # Month deliberately misspelled, as the real file has it.
+    sheet(ws2, 'TEST MALL:  Auust 16-31 , 2026     2130H-0930H  NIGHT SHIFT', [
+        ('NIGHT GUARD TWO', 'N/S', [(t(20, 51), t(9, 31)), (t(20, 54), t(9, 34)),
+                                    (t(20, 53), t(9, 37)), (t(20, 55), t(9, 40)), (t(20, 47), t(9, 36))]),
+    ])
+    wb.save(path)
+    return path
+
+
 if __name__ == '__main__':
-    out = stacked_with_schedule(os.path.join(HERE, 'fixtures', 'stacked-with-schedule.xlsx'))
-    print('wrote', out)
+    _main()

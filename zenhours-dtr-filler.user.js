@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.7.0
+// @version      1.8.0
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -144,7 +144,7 @@
         'name', 'employee', 'employee name', 'employeename', 'guard', 'guard name',
         'full name', 'fullname', 'personnel', 'staff',
         'personnel name', 'name of employee', 'name of guard', 'guard fullname',
-        'user name', 'username',
+        'user name', 'username', 'name of personnel',
         'employee fullname', 'complete name'
     ]);
     const DATE_ALIASES = new Set(['date', 'log date', 'work date', 'day date']);
@@ -1404,7 +1404,9 @@
     function monthYearAbove(ws, r, rng) {
         for (let up = 1; up <= 8 && r - up >= 0; up++) {
             for (let c = rng.s.c; c <= rng.e.c; c++) {
-                const v = String(cellAt(ws, r - up, c) || '');
+                const raw = cellAt(ws, r - up, c);
+                if (typeof raw !== 'string') continue;   // a time cell stringifies to "Mon Jan 01 1900 ..."
+                const v = raw;
                 const mm = v.toUpperCase().match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/);
                 if (mm) {
                     const yy = v.match(/(20\d\d)/);
@@ -1681,6 +1683,155 @@
         return out.sort((a, b) => a.date.localeCompare(b.date));
     }
 
+    // ── Layout H: wide matrix — guards down, days across ─────────────────
+    //  A detachment roster: one row per guard, one COLUMN PAIR per day
+    //  (IN / OUT), day numbers along the top, and a SHIFT column marking DS
+    //  (day shift) or NS (night shift). Only two punches a day, so lunch and
+    //  break stay empty.
+
+    /** Month and year named anywhere in the sheet's top rows. */
+    function sheetMonthYear(ws, rng) {
+        const out = {};
+        for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 8); r++) {
+            for (let c = rng.s.c; c <= Math.min(rng.e.c, rng.s.c + 6); c++) {
+                const raw = cellAt(ws, r, c);
+                // Text only. A time cell stringifies to "Mon Jan 01 1900 04:51:00",
+                // and reading that as the sheet's month dates the whole grid to January.
+                if (typeof raw !== 'string') continue;
+                const v = raw;
+                if (!v) continue;
+                if (!out.month) {
+                    const mm = v.toUpperCase().match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/);
+                    if (mm) out.month = MONTH_NAMES[mm[1].toLowerCase()];
+                }
+                if (!out.year) {
+                    const yy = v.match(/(20\d\d)/);
+                    if (yy) out.year = +yy[1];
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Locate the calendar header: a row of ascending day numbers, an IN/OUT
+     * label row beneath it, and a name column beside them.
+     */
+    function findMatrixLayout(ws) {
+        const rng = sheetRange(ws);
+        for (let r = rng.s.r; r <= Math.min(rng.e.r, rng.s.r + 14); r++) {
+            const days = [];
+            for (let c = rng.s.c; c <= rng.e.c; c++) {
+                const v = cellAt(ws, r, c);
+                if (typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 31) days.push({ day: v, col: c });
+            }
+            if (days.length < 3) continue;
+            let ascending = true;                       // a calendar header climbs
+            for (let i = 1; i < days.length; i++) if (days[i].day <= days[i - 1].day) { ascending = false; break; }
+            if (!ascending) continue;
+
+            for (let lr = r + 1; lr <= Math.min(rng.e.r, r + 3); lr++) {
+                const labels = [];
+                for (let c = rng.s.c; c <= rng.e.c; c++) {
+                    const k = normKey(cellAt(ws, lr, c));
+                    if (k === 'in' || k === 'out') labels.push({ k, c });
+                }
+                if (labels.length < 4) continue;
+
+                let nameCol = -1, shiftCol = -1;
+                for (let hr = Math.max(rng.s.r, r - 2); hr <= r; hr++) {
+                    for (let c = rng.s.c; c <= rng.e.c; c++) {
+                        const k = normKey(cellAt(ws, hr, c));
+                        if (nameCol < 0 && NAME_ALIASES.has(k)) nameCol = c;
+                        if (shiftCol < 0 && k === 'shift') shiftCol = c;
+                    }
+                }
+                if (nameCol < 0) continue;
+
+                // The header label often sits in a merged cell whose values
+                // actually live one column to its right ("NAME OF PERSONNEL"
+                // spanning A:B, with the names in B and row numbers in A).
+                const textRows = (c) => {
+                    let hits = 0;
+                    for (let rr = lr + 1; rr <= Math.min(rng.e.r, lr + 24); rr++) {
+                        const v = cellAt(ws, rr, c);
+                        if (typeof v === 'string' && /[A-Za-z]{3}/.test(v)) hits++;
+                    }
+                    return hits;
+                };
+                if (nameCol + 1 <= rng.e.c && textRows(nameCol + 1) > textRows(nameCol)) nameCol += 1;
+
+                days.forEach((d) => {
+                    const i = labels.find((l) => l.k === 'in' && l.c >= d.col);
+                    const o = i ? labels.find((l) => l.k === 'out' && l.c > i.c) : null;
+                    d.inCol = i ? i.c : null;
+                    d.outCol = o ? o.c : null;
+                });
+                return { dayRow: r, labelRow: lr, days, nameCol, shiftCol, rng };
+            }
+        }
+        return null;
+    }
+
+    const looksLikeMatrix = (ws) => !!findMatrixLayout(ws);
+
+    function parseMatrix(ws, fallback) {
+        const layout = findMatrixLayout(ws);
+        if (!layout) return [];
+        const { days, nameCol, shiftCol, labelRow, rng } = layout;
+
+        const my = sheetMonthYear(ws, rng);
+        const month = my.month || (fallback && fallback.month);
+        const year = my.year || (fallback && fallback.year) || new Date().getFullYear();
+        if (!month) return [];                          // no month anywhere: refuse to guess
+        const assumed = [];
+        if (!my.month) assumed.push(`month taken from ${fallback.source || 'elsewhere'}`);
+
+        const out = [];
+        for (let r = labelRow + 1; r <= rng.e.r; r++) {
+            const name = norm(cellAt(ws, r, nameCol));
+            if (!name || /prepared by|detachment|commander|noted by/i.test(name)) continue;
+            const shift = shiftCol >= 0 ? normKey(cellAt(ws, r, shiftCol)) : '';
+            const isNight = shift === 'ns';
+
+            for (const d of days) {
+                if (d.inCol == null) continue;
+                const rawIn = cellAt(ws, r, d.inCol);
+                const rawOut = d.outCol != null ? cellAt(ws, r, d.outCol) : null;
+                const date = `${year}-${pad2(month)}-${pad2(d.day)}`;
+                const tin = parseTime(rawIn), tout = parseTime(rawOut);
+
+                if (!tin && !tout) {
+                    // "X" means no duty; anything else (a posting like BRICKSTONE)
+                    // is kept as written so the reason survives.
+                    const marker = norm(rawIn) || norm(rawOut);
+                    if (marker) out.push(makeRestRow('', name, date, /^x$/i.test(marker) ? 'no duty (X)' : marker.toLowerCase()));
+                    continue;
+                }
+
+                const seq = sequencePunches({ time_in: tin, time_out: tout });
+                // A night-shift row whose OUT is not after its IN has to be the
+                // next morning, even when the gap is too small to roll on its own.
+                if (isNight && seq.times.time_in && seq.times.time_out && !seq.times.time_out.plus) {
+                    const a = seq.times.time_in.h * 60 + seq.times.time_in.m;
+                    const b = seq.times.time_out.h * 60 + seq.times.time_out.m;
+                    if (b <= a) {
+                        seq.times.time_out.plus = 1;
+                        if (seq.flags.indexOf('overnight') < 0) seq.flags.push('overnight');
+                    }
+                }
+                const row = {
+                    id: '', name, date, times: seq.times,
+                    blanks: COLUMNS.filter((c) => !seq.times[c]),
+                    flags: assumed.concat(seq.flags),
+                    statedHours: null, rest: false
+                };
+                out.push(reconcile(row));
+            }
+        }
+        return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+
     // ── The router ───────────────────────────────────────────────────────
     /**
      * Decide what a sheet is. Scans the WHOLE sheet, because a client workbook
@@ -1708,6 +1859,7 @@
         let format = 'unknown';
         if (detectTableColumns(ws)) format = 'table';
         else if (looksLikeEventLog(ws)) format = 'eventlog';
+        else if (looksLikeMatrix(ws)) format = 'matrix';
         else if (sawFlat) format = 'flat';
         else if (sawDayNumber) format = 'daynumber';
         else if (sawStacked) format = 'stacked';
@@ -1721,6 +1873,7 @@
         let rows = [];
         if (format === 'table') rows = parseTable(ws, detectTableColumns(ws), sheetName);
         else if (format === 'eventlog') rows = parseEventLog(ws);
+        else if (format === 'matrix') rows = parseMatrix(ws, fallbackYear);
         else if (format === 'flat') rows = parseFlatReport(ws);
         else if (format === 'stacked') rows = parseStackedBlocks(ws, sheetName);
         else if (format === 'daynumber') rows = parseDayNumberBlocks(ws, fallbackYear);
@@ -1731,9 +1884,32 @@
     const FORMAT_LABELS = {
         table: 'column headers', flat: 'personnel report', stacked: 'per-guard blocks',
         daynumber: 'day-number blocks', positional: 'headerless columns',
-        eventlog: 'device scan log',
+        eventlog: 'device scan log', matrix: 'day-across roster grid',
         schedule: 'schedule (not punches)', unknown: 'unrecognised', empty: 'empty'
     };
+
+    /** Month and year read out of a file name, e.g. "August 16-20,2026.xlsx". */
+    function monthYearFromText(text) {
+        const out = {};
+        const t = String(text || '').toUpperCase();
+        const mm = t.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/);
+        if (mm) out.month = MONTH_NAMES[mm[1].toLowerCase()];
+        const yy = t.match(/(20\d\d)/);
+        if (yy) out.year = +yy[1];
+        return out;
+    }
+
+    /** The month the page itself is showing, as a last resort. */
+    function pageMonthYear() {
+        const counts = {};
+        for (const iso of indexRows().keys()) {
+            const k = iso.slice(0, 7);
+            counts[k] = (counts[k] || 0) + 1;
+        }
+        const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        if (!best) return {};
+        return { year: +best[0].slice(0, 4), month: +best[0].slice(5, 7) };
+    }
 
     const nameTokens = (s) => new Set(normKey(s).split(' ').filter(Boolean));
 
@@ -1791,12 +1967,22 @@
         const formats = [];
         let totalRows = 0, restRows = 0, flaggedRows = 0;
 
+        // Some sheets never name their period, or misspell the month. Fall back
+        // to the file name, then to the cut-off already open on the page.
+        const fromName = monthYearFromText(sourceName);
+        const fromPage = pageMonthYear();
+        const periodHint = {
+            month: fromName.month || fromPage.month,
+            year: fromName.year || fromPage.year,
+            source: fromName.month ? 'the file name' : 'the dates on this page'
+        };
+
         for (const { name: sheetName, ws } of sheets) {
             if (!ws) continue;
             if (/^\s*(read\s*me|readme|instructions?|notes?|guide|help|legend)\s*$/i.test(sheetName)) continue;
 
             let parsed;
-            try { parsed = parseSheet(ws, sheetName, null); }
+            try { parsed = parseSheet(ws, sheetName, periodHint); }
             catch (err) { warnings.push(`Sheet "${sheetName}": ${err && err.message ? err.message : 'could not be read'}`); continue; }
 
             if (parsed.format === 'schedule') {

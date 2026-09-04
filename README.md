@@ -153,7 +153,7 @@ the next while a workbook is loaded.
 ### Messy client DTRs
 
 Every sheet is classified before it's read, and the panel logs what it decided
-(`layout — Report: personnel report`). Seven shapes are recognised:
+(`layout — Report: personnel report`). Eight shapes are recognised:
 
 | Layout | Recognised by | Identity comes from |
 |---|---|---|
@@ -164,6 +164,7 @@ Every sheet is classified before it's read, and the panel logs what it decided
 | **headerless columns** | name · date · weekday · six punches, no header at all | column A |
 | **biometric export** | repeated `Time In` / `Time Out` pairs, `Enroll No` | the row |
 | **device scan log** | one row per punch with a full timestamp, several per day | the row |
+| **day-across roster grid** | day numbers along the top, `IN`/`OUT` pairs beneath, a `SHIFT` column | the row |
 
 A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
 **planned shifts, not punches**, and refused rather than imported.
@@ -181,6 +182,18 @@ layout — Sheet1: per-guard blocks — RSC MAGNOLIA — AUGUST 16-31, 2026
 Rest markers spelled one letter per cell — `D | A | Y | O | F | F`, as these
 sheets often do — are rebuilt into the real reason (`dayoff`, `leaved`,
 `absent`) rather than guessed at.
+
+**A day-across roster grid** turns the table sideways: one row per guard, one
+column PAIR per day (`IN`/`OUT`), day numbers along the top, and a `SHIFT`
+column reading `DS` or `NS`. Only two punches a day, so lunch and break stay
+empty. `X` becomes *no duty*; any other marker (a posting such as `BRICKSTONE`)
+is kept as written. A row marked `NS` whose Time Out is not after its Time In is
+dated to the next morning even when the gap is too small to roll on its own.
+
+Such sheets often name only the day number, so the month comes from the sheet
+title, then the **file name**, then the cut-off already open on the page — the
+night sheet in one real workbook misspells August as "Auust", and the file name
+carried it.
 
 **A raw device scan log has no time columns at all.** A fingerprint terminal
 exports every punch as its own row with a full timestamp — six rows make one
