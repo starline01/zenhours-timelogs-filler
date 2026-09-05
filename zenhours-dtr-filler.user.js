@@ -2886,6 +2886,8 @@
 
         $id('zdf-onlyblank').addEventListener('change', persist);
         $id('zdf-openedit').addEventListener('change', persist);
+        $id('zdf-clearblanks').addEventListener('change', persist);
+        $id('zdf-autosave').addEventListener('change', persist);
         $id('zdf-paste').addEventListener('change', persist);
 
         // ── Collapse / hide / drag ───────────────────────────────────────
