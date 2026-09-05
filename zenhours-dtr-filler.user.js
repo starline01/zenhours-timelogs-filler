@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.8.0
+// @version      1.8.1
 // @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -2886,6 +2886,8 @@
 
         $id('zdf-onlyblank').addEventListener('change', persist);
         $id('zdf-openedit').addEventListener('change', persist);
+        $id('zdf-clearblanks').addEventListener('change', persist);
+        $id('zdf-autosave').addEventListener('change', persist);
         $id('zdf-paste').addEventListener('change', persist);
 
         // ── Collapse / hide / drag ───────────────────────────────────────
