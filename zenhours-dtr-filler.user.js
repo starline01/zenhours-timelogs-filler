@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.8.1
-// @description  Paste a block of timelogs (date + times) and auto-fill the Zenhours timelogs table. Fills only — you click Save.
+// @version      1.9.0
+// @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
 // @match        *://zenoras.com/*
@@ -88,12 +88,18 @@
 //     guard's hours onto another is the one mistake worth stopping for.
 //
 //  4. Click "Parse" to check what was read, then "Test 1st day" to try a
-//     single row, then "Fill all rows".
-//  5. The script clicks Edit and types the times. It NEVER clicks Save —
-//     review the green-highlighted inputs, then Save each row yourself.
+//     single row, then "Fill & Save all".
+//  5. "Fill & Save all" clicks Edit, types the times, and clicks Save on each
+//     row as it goes. Every save is confirmed by waiting for the row to leave
+//     edit mode, and a Save that never completes is reported rather than
+//     counted. Columns the DTR has no punch for are CLEARED, not left at the
+//     prefilled 12:00 AM, which would otherwise be committed as a real
+//     midnight punch.
 //
-//  "Undo fill" restores every input the script touched back to its original
-//  value (only works while the rows are still open in edit mode).
+//  "Test 1st day" fills a single row and saves nothing — use it to check a new
+//  client file before committing anything. "Undo fill" restores the inputs it
+//  touched, which only works while a row is still open, so it applies to a test
+//  run rather than to rows already saved.
 
 (function () {
     'use strict';
@@ -2402,59 +2408,67 @@
     // =====================================================================
 
     const CSS = `
-    #zdf-panel { position: fixed; top: 12px; right: 12px; z-index: 2147483600;
-        width: min(380px, calc(100vw - 24px));
+    /* Palette and type lifted from the earlier filler: dark #1f2430 panel,
+       #11141c wells, #39404f rules, IBM Plex Mono. Named only, never loaded,
+       so it falls back to the system monospace exactly as that version did. */
+    #zdf-panel { position: fixed; top: 12px; right: 12px; z-index: 999999;
+        width: min(340px, calc(100vw - 24px));
         max-height: calc(100vh - 24px); display: flex; flex-direction: column;
-        background: #ffffff; color: #1f2933; font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
-        border: 1px solid #cbd2d9; border-radius: 10px; box-shadow: 0 10px 34px rgba(0,0,0,.22); overflow: hidden;
+        background: #1f2430; color: #e8e8e8;
+        font: 12px/1.45 'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+        border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4); overflow: hidden;
         resize: both; }
     #zdf-panel * { box-sizing: border-box; font-family: inherit; }
-    #zdf-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
-        background: #6dbe45; color: #fff; cursor: move; user-select: none; }
-    #zdf-head b { flex: 1; font-size: 13px; font-weight: 600; letter-spacing: .2px; }
-    #zdf-head button { background: rgba(255,255,255,.2); border: 0; color: #fff; width: 22px; height: 22px;
-        border-radius: 5px; cursor: pointer; font-size: 14px; line-height: 1; }
-    #zdf-head button:hover { background: rgba(255,255,255,.35); }
-    #zdf-body { padding: 11px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
-    #zdf-head { flex: 0 0 auto; }
+    #zdf-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px;
+        background: #1f2430; color: #e8e8e8; cursor: move; user-select: none;
+        border-bottom: 1px solid #39404f; flex: 0 0 auto; }
+    #zdf-head b { flex: 1; font-size: 12px; font-weight: bold; }
+    #zdf-head button { background: transparent; border: 1px solid #39404f; color: #e8e8e8;
+        width: 22px; height: 22px; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; }
+    #zdf-head button:hover { background: #2a3140; }
+    #zdf-body { padding: 12px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
     #zdf-panel.zdf-collapsed #zdf-body { display: none; }
-    #zdf-paste { width: 100%; height: clamp(72px, 16vh, 150px); resize: vertical; padding: 7px 8px; border: 1px solid #cbd2d9;
-        border-radius: 6px; font-family: Consolas, "Courier New", monospace; font-size: 11.5px; white-space: pre; overflow-x: auto; }
-    #zdf-paste:focus { outline: 2px solid #6dbe45; outline-offset: -1px; }
-    .zdf-hint { color: #7b8794; font-size: 11px; margin: 5px 0 8px; }
+    #zdf-paste { width: 100%; height: clamp(72px, 16vh, 150px); resize: vertical; padding: 6px 7px;
+        background: #11141c; color: #e8e8e8; border: 1px solid #39404f; border-radius: 4px;
+        font-size: 11.5px; white-space: pre; overflow-x: auto; }
+    #zdf-paste:focus { outline: 1px solid #5b6c8f; outline-offset: 0; border-color: #5b6c8f; }
+    .zdf-hint { opacity: .7; font-size: 11px; margin: 6px 0 8px; }
     .zdf-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-    .zdf-btns button { flex: 1 1 auto; padding: 7px 9px; border-radius: 6px; border: 1px solid #cbd2d9;
-        background: #f5f7fa; cursor: pointer; font-size: 12px; font-weight: 500; }
-    .zdf-btns button:hover { background: #e4e7eb; }
-    .zdf-btns button.zdf-primary { background: #6dbe45; border-color: #5aa838; color: #fff; }
-    .zdf-btns button.zdf-primary:hover { background: #5aa838; }
-    .zdf-btns button:disabled { opacity: .5; cursor: default; }
-    .zdf-opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 11.5px; color: #52606d; }
+    .zdf-btns button { flex: 1 1 auto; padding: 6px 8px; border-radius: 4px; border: 1px solid #39404f;
+        background: #2a3140; color: #e8e8e8; cursor: pointer; font-size: 11.5px; }
+    .zdf-btns button:hover { background: #343c4e; }
+    .zdf-btns button.zdf-primary { background: #3d5a3a; border-color: #4e7449; color: #e8f5e4; }
+    .zdf-btns button.zdf-primary:hover { background: #4a6b46; }
+    .zdf-btns button:disabled { opacity: .45; cursor: default; }
+    .zdf-opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 11px; opacity: .85; }
     .zdf-opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-    .zdf-opts label.zdf-danger { color: #b45309; font-weight: 600; }
-    #zdf-log { background: #12161c; color: #cbd5e0; border-radius: 6px; padding: 8px; height: clamp(90px, 20vh, 200px);
-        overflow-y: auto; font-family: Consolas, "Courier New", monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; }
+    #zdf-log { background: #11141c; color: #cbd5e0; border-radius: 4px; padding: 6px;
+        height: clamp(90px, 20vh, 200px); overflow-y: auto;
+        font-size: 11px; white-space: pre-wrap; word-break: break-word; }
     #zdf-log div { margin-bottom: 2px; }
     #zdf-log .ok { color: #7ee787; }
     #zdf-log .err { color: #ff7b72; }
     #zdf-log .warn { color: #e3b341; }
     #zdf-log .info { color: #79c0ff; }
-    #zdf-status { margin-top: 7px; font-size: 11.5px; color: #52606d; }
+    #zdf-status { margin-top: 7px; font-size: 11px; opacity: .7; }
     .zdf-file { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
     .zdf-file input[type=file] { display: none; }
-    .zdf-file label { flex: 1; padding: 7px 9px; border: 1px dashed #a7b0ba; border-radius: 6px;
-        background: #f5f7fa; cursor: pointer; font-size: 12px; font-weight: 500; text-align: center; color: #3e4c59; }
-    .zdf-file label:hover { border-color: #6dbe45; background: #eefbe7; color: #3d7a24; }
-    .zdf-file button { padding: 7px 9px; border-radius: 6px; border: 1px solid #cbd2d9;
-        background: #f5f7fa; cursor: pointer; font-size: 12px; }
+    .zdf-file label { flex: 1; padding: 6px 8px; border: 1px dashed #39404f; border-radius: 4px;
+        background: #11141c; cursor: pointer; font-size: 11.5px; text-align: center; color: #e8e8e8; }
+    .zdf-file label:hover { border-color: #5b6c8f; background: #171b25; }
+    .zdf-file button { padding: 6px 8px; border-radius: 4px; border: 1px solid #39404f;
+        background: #2a3140; color: #e8e8e8; cursor: pointer; font-size: 11.5px; }
+    .zdf-file button:hover { background: #343c4e; }
     #zdf-roster { display: none; margin-bottom: 8px; }
-    #zdf-roster select { width: 100%; padding: 6px 7px; border: 1px solid #cbd2d9; border-radius: 6px; font-size: 12px; }
-    #zdf-match { margin-top: 5px; font-size: 11px; padding: 5px 7px; border-radius: 5px; }
-    #zdf-match.hit { background: #eefbe7; color: #3d7a24; border: 1px solid #b7e39a; }
-    #zdf-match.miss { background: #fff6e0; color: #8a6100; border: 1px solid #f0d089; }
-    #zdf-fab { position: fixed; top: 12px; right: 12px; z-index: 2147483600; display: none;
-        background: #6dbe45; color: #fff; border: 0; border-radius: 20px; padding: 8px 14px;
-        font: 600 12px "Segoe UI", system-ui, sans-serif; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+    #zdf-roster select { width: 100%; padding: 5px 6px; background: #11141c; color: #e8e8e8;
+        border: 1px solid #39404f; border-radius: 4px; font-size: 11.5px; }
+    #zdf-match { margin-top: 5px; font-size: 11px; padding: 5px 7px; border-radius: 4px; }
+    #zdf-match.hit { background: #16241a; color: #7ee787; border: 1px solid #2f5b34; }
+    #zdf-match.miss { background: #2a2415; color: #e3b341; border: 1px solid #5d4c1f; }
+    #zdf-fab { position: fixed; top: 12px; right: 12px; z-index: 999999; display: none;
+        background: #1f2430; color: #e8e8e8; border: 1px solid #39404f; border-radius: 6px; padding: 7px 13px;
+        font: bold 12px 'IBM Plex Mono', ui-monospace, Consolas, monospace; cursor: pointer;
+        box-shadow: 0 8px 28px rgba(0,0,0,.4); }
 
     @media (max-width: 560px) {
         #zdf-panel { left: 8px; right: 8px; top: 8px; width: auto; max-height: calc(100vh - 16px); }
@@ -2465,6 +2479,8 @@
         #zdf-paste { height: 68px; }
         #zdf-log { height: 84px; }
     }
+    /* Highlights sit on the Zenoras page itself, not in the panel, so they stay
+       tuned for that light grid rather than this dark one. */
     input.zdf-touched { outline: 2px solid #6dbe45 !important; background: #eefbe7 !important; }
     tr.zdf-row-touched > td { background: #f4fcef !important; }
     `;
@@ -2504,7 +2520,7 @@
                 <div class="zdf-btns">
                     <button id="zdf-parse">Parse</button>
                     <button id="zdf-test">Test 1st day</button>
-                    <button id="zdf-fill" class="zdf-primary">Fill all rows</button>
+                    <button id="zdf-fill" class="zdf-primary">Fill &amp; Save all</button>
                 </div>
                 <div class="zdf-btns">
                     <button id="zdf-undo">Undo fill</button>
@@ -2514,8 +2530,6 @@
                 <div class="zdf-opts">
                     <label><input type="checkbox" id="zdf-onlyblank" checked> Only fill columns that are blank (--:--)</label>
                     <label><input type="checkbox" id="zdf-openedit" checked> Click Edit automatically</label>
-                    <label><input type="checkbox" id="zdf-clearblanks"> Clear the field when my cell is blank/dash</label>
-                    <label class="zdf-danger"><input type="checkbox" id="zdf-autosave"> Save each row automatically (no review, clears blanks)</label>
                 </div>
                 <div id="zdf-log"></div>
                 <div id="zdf-status">Ready.</div>
@@ -2533,8 +2547,6 @@
 
         if (settings.onlyBlank === false) $id('zdf-onlyblank').checked = false;
         if (settings.openEdit === false) $id('zdf-openedit').checked = false;
-        if (settings.clearBlanks === true) $id('zdf-clearblanks').checked = true;
-        if (settings.autoSave === true) $id('zdf-autosave').checked = true;
 
         // Only restore a remembered paste in manual mode. With a workbook loaded
         // the box must always be (re)filled from the employee matched to THIS
@@ -2557,8 +2569,6 @@
             saveSettings({
                 onlyBlank: $id('zdf-onlyblank').checked,
                 openEdit: $id('zdf-openedit').checked,
-                clearBlanks: $id('zdf-clearblanks').checked,
-                autoSave: $id('zdf-autosave').checked,
                 // Never carry one employee's times to the next page (see above).
                 paste: roster ? '' : $id('zdf-paste').value.slice(0, 20000)
             });
@@ -2798,24 +2808,26 @@
             if (!entries.length) { log('No rows parsed.', 'err'); status('Nothing to fill.'); return; }
 
             const list = limitToFirst ? entries.slice(0, 1) : entries;
-            const autoSave = $id('zdf-autosave').checked && !limitToFirst;
+            // Saving is no longer optional. "Test 1st day" stays a preview so a
+            // new client file can still be checked before anything is committed.
+            const autoSave = !limitToFirst;
             const opts = {
                 onlyBlank: $id('zdf-onlyblank').checked,
                 openEdit: $id('zdf-openedit').checked,
-                // Auto-save forces blanks to be cleared. Left alone they keep
-                // Zenoras' prefilled 12:00 AM, and saving that records a real
-                // midnight punch on a guard who simply had no lunch break —
-                // wrong hours, and no review step to catch it.
-                clearBlanks: $id('zdf-clearblanks').checked || autoSave,
+                // Blanks are always cleared. Left alone they keep Zenoras'
+                // prefilled 12:00 AM, and saving that records a real midnight
+                // punch on a guard who simply had no lunch break — wrong hours,
+                // with no review step left to catch it.
+                clearBlanks: true,
                 autoSave,
                 delay: 120,
                 saveDelay: 250
             };
             if (opts.autoSave) {
-                log('Auto-save is ON — each row is committed to Zenoras as it is filled. Undo will not be possible.', 'warn');
-                if (!$id('zdf-clearblanks').checked) {
-                    log('Columns with no value are being CLEARED rather than saved as 12:00 AM.', 'warn');
-                }
+                log('Each row is committed to Zenoras as it is filled. Undo will not be possible.', 'warn');
+                log('Columns with no value are cleared rather than saved as 12:00 AM.', 'info');
+            } else {
+                log('Test run — this fills one row and saves nothing.', 'info');
             }
             if (!opts.openEdit) log('Auto-Edit is off — only rows already in edit mode will fill.', 'warn');
 
@@ -2839,15 +2851,15 @@
                     (r.blanksLeft ? `, ${r.blanksLeft} left at 12:00 AM (blank in your paste)` : '') +
                     (r.missingRows ? `, ${r.missingRows} row(s) not filled` : '') + '.', 'ok');
                 if (r.overnightFields) {
-                    log(`${r.overnightFields} overnight punch(es) were dated to the following day — check those rows before saving.`, 'warn');
+                    log(`${r.overnightFields} overnight punch(es) were dated to the following day — worth checking those rows.`, 'warn');
                 }
                 if (opts.autoSave) {
                     log(`Saved ${r.savedRows} of ${r.filledRows} row(s) to Zenoras.`, r.savedRows === r.filledRows ? 'ok' : 'warn');
                     r.notSaved.forEach((n) => log(`  ! not saved: ${n} — open that row and finish it by hand`, 'warn'));
                     status(`Filled ${r.filledRows}, saved ${r.savedRows}.`);
                 } else {
-                    log('Nothing was saved — review the highlighted inputs, then click Save on each row.', 'info');
-                    status(`Filled ${r.filledRows} row(s). Click Save yourself.`);
+                    log('Test run — nothing was saved. Check this row, then use Fill & Save all.', 'info');
+                    status(`Test filled ${r.filledRows} row(s). Nothing saved.`);
                 }
 
                 // Track progress through the roster so you can pick up where you left off.
@@ -2886,8 +2898,6 @@
 
         $id('zdf-onlyblank').addEventListener('change', persist);
         $id('zdf-openedit').addEventListener('change', persist);
-        $id('zdf-clearblanks').addEventListener('change', persist);
-        $id('zdf-autosave').addEventListener('change', persist);
         $id('zdf-paste').addEventListener('change', persist);
 
         // ── Collapse / hide / drag ───────────────────────────────────────

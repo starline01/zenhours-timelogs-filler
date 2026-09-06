@@ -4,8 +4,8 @@ A Tampermonkey userscript that fills the Zenhours timelogs table from a block of
 timelogs pasted out of Excel. It finds each date's row, clicks **Edit**, and types
 the times into the six time fields.
 
-**By default it never clicks Save.** You review the highlighted values and save each
-row yourself. Auto-save is available as an opt-in — see below.
+**It saves each row as it fills it.** Use **Test 1st day** to check a new client
+file before committing anything — that one fills a single row and saves nothing.
 
 ---
 
@@ -83,25 +83,21 @@ way everywhere else. To restrict it to timelogs pages only, swap both lines for:
 
 4. **Parse** — shows what was read and which dates exist on the page.
    A ✗ means that date is not in the current search range.
-5. **Test 1st day** — fills only the first row, so you can sanity-check one row.
-6. **Fill all rows** — fills every matched row and highlights the fields in green.
-7. Review, then click **Save** on each row.
+5. **Test 1st day** — fills one row and saves nothing, so you can check a new
+   client file before anything is committed.
+6. **Fill & Save all** — fills every matched row and saves it.
 
-**Undo fill** puts every field the script touched back to its original value
-(works while the rows are still open in edit mode).
+**Undo fill** puts every field the script touched back to its original value. It
+only works while a row is still open, so it applies to a test run rather than to
+rows already saved.
 
-### Auto-save
+### Saving
 
-By default the script fills and stops, and you click Save. Ticking **Save each
-row automatically** commits each row as it is filled — useful once you trust a
-client's file and are working through a whole roster.
-
-What it does differently, and why:
+Every row is committed to Zenoras as it is filled. What that means in practice:
 
 - **Blanks are cleared, not left at `12:00 AM`.** Untouched fields keep Zenoras'
   prefill, and saving that records a real midnight punch on a guard who simply
-  had no lunch break — wrong hours, with no review step to catch it. Auto-save
-  therefore clears them and says so in the log.
+  had no lunch break — wrong hours, with no review step left to catch it.
 - **A row is only saved if every value meant for it went in.** If a column had
   nowhere to go — an unreadable OCR cell, an unparseable time — the row is left
   open and listed under `not saved` for you to finish by hand.
@@ -109,8 +105,8 @@ What it does differently, and why:
   that never completes is reported, not counted.
 - **Undo stops working** for rows already committed. The log warns before the
   run starts.
-- **Test 1st day never auto-saves**, whatever the checkbox says — it exists to
-  let you check one row before committing anything.
+- **Test 1st day never saves** — it exists to let you check one row, and a whole
+  client file, before committing anything.
 
 ---
 
@@ -329,8 +325,11 @@ working without it, so saving the sheet as CSV is the fallback.
 |---|---|---|
 | Only fill columns that are blank (`--:--`) | on | Never overwrites a time already saved in Zenhours |
 | Click Edit automatically | on | Off = only fills rows you already opened yourself |
-| Clear the field when my cell is blank/dash | off | On = empties the field instead of leaving `12:00 AM` |
-| Save each row automatically | **off** | On = commits each row to Zenoras as it is filled. No review, no undo. |
+
+
+Columns with no punch are always cleared rather than left at `12:00 AM`, and every
+row is saved as it is filled — neither is optional, because saving a prefilled
+`12:00 AM` would record a midnight punch that never happened.
 
 ---
 
