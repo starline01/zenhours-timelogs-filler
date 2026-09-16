@@ -286,8 +286,11 @@ What protects you:
 - **Dates must already be on the page.** A row whose date isn't in the range you
   searched is dropped, since a misread date is as likely as a misread time.
 
-**Handwritten DTRs will be refused** — Tesseract cannot read handwriting, and it
-is better to say so than to invent numbers. Type those in by hand.
+**Handwritten DTRs will be refused**, and no scan quality changes that — this
+engine reads print. A handwritten punch card photographed straight, cropped and
+squared still comes back around 40% confidence, well under the gate, with output
+like `[29s` for `1233`. The refusal message says so explicitly rather than
+suggesting a rescan that cannot help.
 
 Scanning tips: flat on the glass, 300dpi, straight (not a phone photo at an
 angle). PDFs aren't read directly yet — export the page as PNG first.

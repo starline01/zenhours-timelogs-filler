@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.9.0
+// @version      1.9.1
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -2655,9 +2655,12 @@
 
                 // Quality gate: refuse rather than emit confident-looking nonsense.
                 if (res.confidence && res.confidence < OCR_PAGE_MIN) {
-                    log(`Overall confidence ${Math.round(res.confidence)}% — too low to trust.`, 'err');
-                    log('That usually means a handwritten form, a photo at an angle, or a low-resolution scan.', 'info');
-                    log('Nothing was filled. Type these times in by hand, or rescan flat at 300dpi.', 'info');
+                    log(`Overall confidence ${Math.round(res.confidence)}% — too low to trust. Nothing was filled.`, 'err');
+                    // Be specific about which cause is worth acting on. Telling
+                    // someone to rescan a HANDWRITTEN card wastes their time:
+                    // this engine reads print, and no scan quality changes that.
+                    log('If the card is HANDWRITTEN, this OCR cannot read it at any quality — rescanning will not help.', 'warn');
+                    log('If it is PRINTED, try again: flat on the glass, square to the page, 300dpi.', 'info');
                     status('OCR refused — sheet not readable.');
                     return;
                 }

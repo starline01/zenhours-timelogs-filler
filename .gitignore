@@ -12,3 +12,6 @@ test/*.xlsx
 test/*.xls
 test/*.csv
 !test/fixtures/*.csv
+test/*.jpg
+test/*.png
+!test/fixtures/*.png
