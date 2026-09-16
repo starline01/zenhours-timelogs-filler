@@ -286,72 +286,14 @@ What protects you:
 - **Dates must already be on the page.** A row whose date isn't in the range you
   searched is dropped, since a misread date is as likely as a misread time.
 
-**Handwritten DTRs will be refused by this OCR**, and no scan quality changes
-that — the engine reads print. A handwritten punch card photographed straight,
-cropped and squared still comes back around 40% confidence, well under the gate,
-with output like `[29s` for `1233`. The refusal message says so explicitly
-rather than suggesting a rescan that cannot help — and then offers the one thing
-that does: reading it with Claude.
+**Handwritten DTRs will be refused**, and no scan quality changes that — this
+engine reads print. A handwritten punch card photographed straight, cropped and
+squared still comes back around 40% confidence, well under the gate, with output
+like `[29s` for `1233`. The refusal message says so explicitly rather than
+suggesting a rescan that cannot help.
 
 Scanning tips: flat on the glass, 300dpi, straight (not a phone photo at an
 angle). PDFs aren't read directly yet — export the page as PNG first.
-
-### Handwritten cards (Claude)
-
-When the local OCR gives up, a panel appears offering to read the card with
-Claude. **This is the only part of the tool that sends anything off the PC**, and
-it is deliberately behind a button:
-
-- Local OCR always runs first. If it succeeds, nothing is ever uploaded.
-- The offer only appears for the card that just failed, and the picture is sent
-  only when you click **Read with Claude**.
-- The photo is shrunk to 1568px on its long side and re-encoded as JPEG before
-  it goes — smaller upload, lower cost, no loss of legibility.
-
-The reading lands in the paste box exactly like OCR output, under exactly the
-same rules: nothing is filled automatically, a cell Claude was not sure of comes
-back as `??:??` and is refused by the filler, rest days produce no row, and days
-outside the searched range are dropped rather than moved. A row whose punches
-don't pair up in/out gets only its Time In and Time Out — the middle columns are
-left blank rather than guessed, and the log says which row.
-
-The model is told never to guess a digit: a wrong time becomes wrong pay, while
-a `??:??` is one cell to type by hand.
-
-**The API key.** You need an Anthropic API key (console.claude.com). It is
-stored in this browser's `localStorage` for the Zenoras domain, which means
-**any script running on that site can read it** — so use a key created for this
-tool alone, with a spend limit, never your main one. **Forget key** removes it.
-
-Spend limits attach to a **workspace**, not to a key, and they can't be set on
-the default workspace. So: Settings → Workspaces → create one for this tool,
-set its spend limit, then create the key **inside that workspace**.
-
-Nothing about the key or the cloud path is committed to this repo.
-
-#### What it costs
-
-Pick the model in the panel. The choice is remembered.
-
-| Model | Per card | 200 cards/month |
-|---|---|---|
-| **Sonnet 5** (default) | ~$0.035 | ~$7 |
-| Opus 5 | ~$0.088 | ~$18 |
-
-A card is about 2,800 input tokens — the image is ~2,300 of those — and ~3,000
-output. **Output is roughly 85% of the bill**, because thinking tokens are billed
-as output. That is why the model is the only lever that moves the cost much:
-shrinking the image further saves pennies and costs legibility.
-
-Every reading logs what it actually cost, plus a running total since the counter
-was last reset (**Reset $** clears it). Those are real figures from the usage the
-API reports back, not estimates — measure a few cards before setting a budget.
-
-Sonnet 5 is the default because the expensive failure here is a *confident wrong
-digit*, and the model is told to answer `??:??` rather than guess. When a card
-does come back with more than a couple of unsure cells, the log suggests
-re-reading that one card on Opus 5 — worth the extra few cents on a bad card,
-not on every card.
 
 ### Excel support
 

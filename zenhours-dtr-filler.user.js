@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.11.0
+// @version      1.12.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -1068,7 +1068,6 @@
     const DONE_KEY = 'zdf.done.v1';
 
     let ocrActive = false;    // OCR output sits in the box for THIS page's guard
-    let visionCandidate = null;   // image the local OCR gave up on, awaiting a click to upload
     let roster = null;        // { employees: [{key, id, name, rows:[{date,times,blanks}]}], source }
 
     function readStore(key, fallback) {
@@ -2405,253 +2404,6 @@
     }
 
     // =====================================================================
-    //  CLOUD VISION — reading a HANDWRITTEN card the local OCR cannot
-    // =====================================================================
-    //  Tesseract reads print. A handwritten punch card comes back around 40%
-    //  confidence with output like "[29s" where the card says "1233", so it is
-    //  refused. A vision model reads that card properly — but the image has to
-    //  leave this PC for it to do so. So nothing is ever sent automatically:
-    //  local OCR runs first, and the picture is only uploaded when you click
-    //  the button that appears after it gives up.
-    //
-    //  Checked against the API from a browser: without the direct-browser
-    //  header the request never leaves, the browser blocks it on CORS.
-
-    const VISION_URL = 'https://api.anthropic.com/v1/messages';
-    // Output tokens are about 85% of what a card costs — thinking counts as
-    // output — so the model is the only lever that moves the bill much.
-    // Prices are dollars per million tokens, from the published rate card.
-    const VISION_MODELS = {
-        'claude-sonnet-5': { label: 'Sonnet 5 — cheaper', inRate: 2, outRate: 10 },
-        'claude-opus-5': { label: 'Opus 5 — most accurate', inRate: 5, outRate: 25 }
-    };
-    const VISION_MODEL_DEFAULT = 'claude-sonnet-5';
-    const VISION_KEY_STORE = 'zdf.visionkey.v1';
-    const VISION_MODEL_STORE = 'zdf.visionmodel.v1';
-    const VISION_SPEND_STORE = 'zdf.visionspend.v1';
-    const VISION_MAX_EDGE = 1568;          // past this the model gains nothing and tokens cost more
-
-    // The shape the model must answer in. Punches stay a plain chronological
-    // list: which one is a lunch and which is a break is decided here, by the
-    // same in/out pairing the spreadsheet readers already use.
-    const VISION_SCHEMA = {
-        type: 'object',
-        properties: {
-            guard_name: { type: 'string', description: 'Name written on the card, or "" if none is legible' },
-            year: { type: 'integer', description: 'Year of the pay period shown on the card' },
-            month: { type: 'integer', description: 'Month of the pay period, 1-12' },
-            days: {
-                type: 'array',
-                items: {
-                    type: 'object',
-                    properties: {
-                        day: { type: 'integer', description: 'Day of month, 1-31' },
-                        rest: { type: 'boolean', description: 'true for DAY OFF / ABSENT / LEAVE rows' },
-                        marker: { type: 'string', description: 'The rest-day word as written, "" otherwise' },
-                        punches: {
-                            type: 'array',
-                            description: 'Times in chronological order, "HH:MM" 24-hour, or "??:??" when not certain',
-                            items: { type: 'string' }
-                        }
-                    },
-                    required: ['day', 'rest', 'marker', 'punches'],
-                    additionalProperties: false
-                }
-            }
-        },
-        required: ['guard_name', 'year', 'month', 'days'],
-        additionalProperties: false
-    };
-
-    const VISION_PROMPT = [
-        'This is a photographed employee time card (DTR). Read every punch time on it.',
-        '',
-        'Rules, in order of importance:',
-        '1. NEVER guess a digit. If you are not certain what a time says, return "??:??" for that',
-        '   punch. A wrong time becomes wrong pay; a "??:??" is simply typed in by hand afterwards.',
-        '2. Return each day\'s punches in CHRONOLOGICAL order, exactly as many as that row shows.',
-        '   Do not pad the list to a fixed length and do not reorder it. Columns normally run as',
-        '   in/out pairs across the row.',
-        '3. A row reading DAY OFF, ABSENT, LEAVE, REST or similar — often written one letter per',
-        '   cell — is rest: true, with the word in "marker" and an empty punches list.',
-        '4. Skip days that have no entry at all rather than inventing a row for them.',
-        '5. Times are 24-hour "HH:MM". A card written 0933 is 09:33; 2045 is 20:45. If the card',
-        '   uses AM/PM, convert it.',
-        '',
-        'You may use the card\'s own internal consistency to settle an ambiguous digit — a shift',
-        'pattern repeated down the column, for instance. If it is still ambiguous after that, use',
-        '"??:??". Take the year and month from the pay-period header on the card.'
-    ].join('\n');
-
-    function visionKey() {
-        try { return localStorage.getItem(VISION_KEY_STORE) || ''; } catch (e) { return ''; }
-    }
-    function setVisionKey(k) {
-        try { k ? localStorage.setItem(VISION_KEY_STORE, k) : localStorage.removeItem(VISION_KEY_STORE); }
-        catch (e) { /* storage blocked — the key just will not persist */ }
-    }
-    function visionModel() {
-        let m = '';
-        try { m = localStorage.getItem(VISION_MODEL_STORE) || ''; } catch (e) { /* ignore */ }
-        return VISION_MODELS[m] ? m : VISION_MODEL_DEFAULT;
-    }
-    function setVisionModel(m) {
-        try { localStorage.setItem(VISION_MODEL_STORE, m); } catch (e) { /* ignore */ }
-    }
-
-    /** What a reading actually cost, in dollars, from the usage the API reports. */
-    function visionCost(usage, model) {
-        const price = VISION_MODELS[model];
-        if (!price || !usage) return 0;
-        const inTok = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
-            + (usage.cache_read_input_tokens || 0);
-        return (inTok * price.inRate + (usage.output_tokens || 0) * price.outRate) / 1e6;
-    }
-
-    /** Running total since it was last reset, so the bill is never a surprise. */
-    function visionSpend(add) {
-        let total = 0;
-        try { total = parseFloat(localStorage.getItem(VISION_SPEND_STORE)) || 0; } catch (e) { /* ignore */ }
-        if (typeof add === 'number') {
-            total += add;
-            try { localStorage.setItem(VISION_SPEND_STORE, String(total)); } catch (e) { /* ignore */ }
-        }
-        return total;
-    }
-
-    /**
-     * Re-encode the photo as a JPEG no longer than VISION_MAX_EDGE on its long
-     * side. Phone photos are far bigger than the model can use, and shrinking
-     * them here cuts both the upload and the token bill without costing
-     * legibility. It also normalises formats the API does not accept (bmp, tiff).
-     */
-    function imageForVision(file) {
-        return new Promise((resolve, reject) => {
-            const url = URL.createObjectURL(file);
-            const img = new Image();
-            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('that image could not be decoded')); };
-            img.onload = () => {
-                URL.revokeObjectURL(url);
-                const scale = Math.min(1, VISION_MAX_EDGE / Math.max(img.width, img.height));
-                const canvas = document.createElement('canvas');
-                canvas.width = Math.max(1, Math.round(img.width * scale));
-                canvas.height = Math.max(1, Math.round(img.height * scale));
-                const g = canvas.getContext('2d');
-                g.imageSmoothingEnabled = true;
-                g.imageSmoothingQuality = 'high';
-                g.drawImage(img, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-                resolve({
-                    media_type: 'image/jpeg',
-                    data: dataUrl.split(',')[1],
-                    w: canvas.width, h: canvas.height,
-                    kb: Math.round((dataUrl.length * 3) / 4 / 1024)
-                });
-            };
-            img.src = url;
-        });
-    }
-
-    /** Send the card to the model and return its structured reading. */
-    async function visionReadCard(file, apiKey, model, onProgress) {
-        const img = await imageForVision(file);
-        if (onProgress) onProgress(`Uploading ${img.w}x${img.h}, ~${img.kb} KB…`);
-
-        let res;
-        try {
-            res = await fetch(VISION_URL, {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    'x-api-key': apiKey,
-                    'anthropic-version': '2023-06-01',
-                    // Without this the browser blocks the request before sending it.
-                    'anthropic-dangerous-direct-browser-access': 'true'
-                },
-                body: JSON.stringify({
-                    model: model,
-                    max_tokens: 16000,
-                    thinking: { type: 'adaptive' },
-                    output_config: { format: { type: 'json_schema', schema: VISION_SCHEMA } },
-                    messages: [{
-                        role: 'user',
-                        content: [
-                            { type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.data } },
-                            { type: 'text', text: VISION_PROMPT }
-                        ]
-                    }]
-                })
-            });
-        } catch (err) {
-            throw new Error('could not reach the API — check the connection, or this page may be blocking outside requests');
-        }
-
-        if (!res.ok) {
-            let detail = '';
-            try { detail = ((await res.json()).error || {}).message || ''; } catch (e) { /* no body */ }
-            if (res.status === 401) throw new Error('the API key was rejected — check it and try again');
-            if (res.status === 429) throw new Error('the API is rate limiting — wait a moment and retry');
-            if (res.status === 400 && /credit|balance/i.test(detail)) throw new Error('the API account is out of credit');
-            throw new Error(`the API returned ${res.status}` + (detail ? ' — ' + detail : ''));
-        }
-
-        const body = await res.json();
-        if (body.stop_reason === 'refusal') throw new Error('the model declined to read this image');
-        if (body.stop_reason === 'max_tokens') throw new Error('the reading was cut short — try photographing fewer days at once');
-        const block = (body.content || []).find((b) => b.type === 'text');
-        if (!block) throw new Error('the API sent back no reading');
-        let parsed;
-        try { parsed = JSON.parse(block.text); }
-        catch (e) { throw new Error('the reading came back in an unusable form'); }
-        parsed.usage = body.usage || {};
-        return parsed;
-    }
-
-    /**
-     * Turn the model's reading into paste-box lines. Each day's punches are
-     * paired in/out through PUNCH_SEQUENCE, so two punches mean in and out,
-     * four add a lunch, six add a break — the same rule the biometric exports
-     * get. An odd count cannot be paired, so only the ends are trusted.
-     */
-    function visionToLines(data, pageDates) {
-        const onPage = new Set(pageDates);
-        const lines = [], issues = [];
-        let restDays = 0, unreadable = 0, offPage = 0;
-
-        const year = +data.year, month = +data.month;
-        if (!(year >= 2000 && year <= 2100) || !(month >= 1 && month <= 12)) {
-            return { lines: [], issues: ['the pay period on the card could not be read'], restDays: 0, unreadable: 0, offPage: 0 };
-        }
-
-        for (const d of (data.days || [])) {
-            const day = +d.day;
-            if (!(day >= 1 && day <= 31)) continue;
-            const date = `${year}-${pad2(month)}-${pad2(day)}`;
-            if (onPage.size && !onPage.has(date)) { offPage++; continue; }
-            if (d.rest) { restDays++; continue; }
-
-            const punches = (d.punches || []).map(norm).filter((p) => p !== '');
-            if (!punches.length) continue;
-
-            const cells = COLUMNS.map(() => '-');
-            const seq = punches.length % 2 === 0 ? PUNCH_SEQUENCE[punches.length / 2] : null;
-            if (seq) {
-                seq.forEach((col, i) => { cells[COLUMNS.indexOf(col)] = punches[i]; });
-            } else {
-                // Without a pair for every punch the middle columns cannot be
-                // placed — filling them by guesswork is how a lunch ends up in
-                // a break column. Anchor the two ends and say so.
-                cells[0] = punches[0];
-                if (punches.length > 1) cells[COLUMNS.length - 1] = punches[punches.length - 1];
-                issues.push(`${date}: ${punches.length} punches do not pair up — only Time In and Time Out were set`);
-            }
-            cells.forEach((c) => { if (c === UNREADABLE) unreadable++; });
-            lines.push([date].concat(cells).join('\t'));
-        }
-        return { lines, issues, restDays, unreadable, offPage };
-    }
-
-    // =====================================================================
     //  PANEL UI
     // =====================================================================
 
@@ -2699,14 +2451,6 @@
     #zdf-log .warn { color: #e3b341; }
     #zdf-log .info { color: #79c0ff; }
     #zdf-status { margin-top: 7px; font-size: 11px; opacity: .7; }
-    #zdf-vision { margin-bottom: 8px; padding: 8px; border: 1px solid #5c4a2e; border-radius: 4px;
-        background: #191b22; }
-    #zdf-vision .zdf-vhead { color: #e0b563; font-weight: 600; margin-bottom: 3px; }
-    #zdf-vision .zdf-vnote { color: #9aa3b4; margin-bottom: 6px; line-height: 1.4; }
-    #zdf-vision input[type=password], #zdf-vision select { width: 100%; box-sizing: border-box;
-        margin-bottom: 6px; padding: 5px 6px; border: 1px solid #39404f; border-radius: 4px;
-        background: #11141c; color: #e8e8e8; font: inherit; }
-    #zdf-vision .zdf-btns { margin-bottom: 0; }
     .zdf-file { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
     .zdf-file input[type=file] { display: none; }
     .zdf-file label { flex: 1; padding: 6px 8px; border: 1px dashed #39404f; border-radius: 4px;
@@ -2764,17 +2508,6 @@
                     <label for="zdf-xlsx" id="zdf-filelabel">Load Excel, CSV or a scan…</label>
                     <input type="file" id="zdf-xlsx" accept=".xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff">
                     <button id="zdf-forget" title="Forget the loaded file">Clear</button>
-                </div>
-                <div id="zdf-vision" hidden>
-                    <div class="zdf-vhead">Handwritten card — read it with Claude?</div>
-                    <div class="zdf-vnote">This uploads the picture to Anthropic. Nothing has been sent yet.</div>
-                    <select id="zdf-vmodel"></select>
-                    <input type="password" id="zdf-vkey" spellcheck="false" placeholder="Anthropic API key (sk-ant-…)">
-                    <div class="zdf-btns">
-                        <button id="zdf-vrun" class="zdf-primary">Read with Claude</button>
-                        <button id="zdf-vforget" title="Remove the stored key from this browser">Forget key</button>
-                        <button id="zdf-vreset" title="Reset the running cost counter">Reset $</button>
-                    </div>
                 </div>
                 <div id="zdf-roster">
                     <select id="zdf-emp"></select>
@@ -2912,7 +2645,6 @@
          */
         async function runOcr(file) {
             const buttons = panel.querySelectorAll('.zdf-btns button');
-            hideVision();
             buttons.forEach((b) => (b.disabled = true));
             log(`Reading ${file.name} with OCR — this runs on this PC, the image is not uploaded.`, 'info');
             status('Running OCR…');
@@ -2930,7 +2662,6 @@
                     log('If the card is HANDWRITTEN, this OCR cannot read it at any quality — rescanning will not help.', 'warn');
                     log('If it is PRINTED, try again: flat on the glass, square to the page, 300dpi.', 'info');
                     status('OCR refused — sheet not readable.');
-                    offerVision(file);
                     return;
                 }
                 if (!res.lines.length) {
@@ -2939,7 +2670,6 @@
                         ? 'Times were found but no dates — make sure the date column is in the picture, and Search the matching range on this page first.'
                         : 'No times were found at all — if this is a handwritten form, OCR cannot read it.', 'info');
                     status('OCR found nothing to fill.');
-                    offerVision(file);
                     return;
                 }
 
@@ -2963,101 +2693,6 @@
             } catch (err) {
                 log('OCR failed: ' + (err && err.message ? err.message : String(err)), 'err');
                 status('OCR failed.');
-                offerVision(file);
-            } finally {
-                buttons.forEach((b) => (b.disabled = false));
-            }
-        }
-
-        function hideVision() {
-            visionCandidate = null;
-            $id('zdf-vision').hidden = true;
-        }
-
-        /**
-         * Local OCR could not read this card. Put the upload behind a button
-         * rather than doing it: the image only leaves this PC on a click, and
-         * only for the card that just failed.
-         */
-        function offerVision(file) {
-            visionCandidate = file;
-            const box = $id('zdf-vision');
-            box.hidden = false;
-            $id('zdf-vkey').value = visionKey();
-            const sel = $id('zdf-vmodel');
-            if (!sel.options.length) {
-                Object.keys(VISION_MODELS).forEach((id) => {
-                    sel.add(new Option(VISION_MODELS[id].label, id));
-                });
-            }
-            sel.value = visionModel();
-            log('Claude can read handwriting that this OCR cannot — the button below sends '
-                + 'this one picture to Anthropic. It has not been sent.', 'info');
-        }
-
-        /** Upload the refused card and put the reading in the box for checking. */
-        async function runVision() {
-            const file = visionCandidate;
-            if (!file) { log('No scan is waiting to be read.', 'err'); return; }
-            const key = norm($id('zdf-vkey').value);
-            if (!key) { log('Paste an Anthropic API key first.', 'err'); status('No API key.'); return; }
-            if (visionKey() !== key) {
-                setVisionKey(key);
-                log('Key saved in this browser. Anything running on this site can read it — '
-                    + 'use a key of its own with a low spend limit, not your main one.', 'warn');
-            }
-
-            const model = $id('zdf-vmodel').value || VISION_MODEL_DEFAULT;
-            setVisionModel(model);
-
-            const buttons = panel.querySelectorAll('.zdf-btns button');
-            buttons.forEach((b) => (b.disabled = true));
-            log(`Sending ${file.name} to ${VISION_MODELS[model].label.split(' — ')[0]}…`, 'info');
-            status('Reading with Claude…');
-            try {
-                const data = await visionReadCard(file, key, model, (msg) => status(msg));
-                const pageDates = Array.from(indexRows().keys());
-                const res = visionToLines(data, pageDates);
-
-                if (data.guard_name) {
-                    log(`Card reads: ${data.guard_name} — check that is the guard this page is for.`, 'warn');
-                }
-                if (!res.lines.length) {
-                    res.issues.forEach((i) => log('  ! ' + i, 'warn'));
-                    log(res.offPage
-                        ? `${res.offPage} day(s) were read but none fall in the range shown on this page — Search the matching dates first.`
-                        : 'Claude read no usable rows from that card.', 'err');
-                    status('Nothing to fill.');
-                    return;
-                }
-
-                ocrActive = true;
-                $id('zdf-paste').value = res.lines.join('\n');
-                log(`Claude read ${res.lines.length} day(s)`
-                    + (res.restDays ? `, plus ${res.restDays} rest/leave day(s) left out` : '')
-                    + (res.offPage ? `, ${res.offPage} outside this page's range` : '') + '.', 'ok');
-                res.issues.slice(0, 10).forEach((i) => log('  ! ' + i, 'warn'));
-                if (res.issues.length > 10) log(`  ! …and ${res.issues.length - 10} more.`, 'warn');
-                if (res.unreadable) {
-                    log(`${res.unreadable} cell(s) came back as ${UNREADABLE} — Claude was not sure of those, `
-                        + 'and they will NOT be filled until you type them in.', 'warn');
-                    if (model !== 'claude-opus-5' && res.unreadable > 2) {
-                        log('  That is a lot of unsure cells. Switching to Opus 5 above and reading this card '
-                            + 'again may recover them — worth the extra cost on a bad card, not on every card.', 'info');
-                    }
-                }
-                const u = data.usage || {};
-                if (u.input_tokens) {
-                    const cost = visionCost(u, model);
-                    const total = visionSpend(cost);
-                    log(`  cost $${cost.toFixed(3)} (${u.input_tokens} tokens in, ${u.output_tokens || 0} out)`
-                        + ` — $${total.toFixed(2)} since the counter was last reset.`, 'info');
-                }
-                log('Check every value against the card before filling.', 'warn');
-                status(`Claude read ${res.lines.length} rows — review them, then Fill.`);
-            } catch (err) {
-                log('Claude could not read it: ' + (err && err.message ? err.message : String(err)), 'err');
-                status('Reading failed.');
             } finally {
                 buttons.forEach((b) => (b.disabled = false));
             }
@@ -3078,7 +2713,6 @@
                 return;
             }
             log(`Reading ${file.name}…`, 'info');
-            hideVision();
             try {
                 ocrActive = false;
                 const sheets = await readWorkbook(file);
@@ -3128,19 +2762,6 @@
             flagged.slice(0, 8).forEach((r) => log(`  ! ${r.date} — ${r.flags.join('; ')}`, 'warn'));
             if (flagged.length > 8) log(`  ! …and ${flagged.length - 8} more day(s) worth checking.`, 'warn');
         }
-
-        $id('zdf-vrun').addEventListener('click', runVision);
-
-        $id('zdf-vreset').addEventListener('click', () => {
-            try { localStorage.removeItem(VISION_SPEND_STORE); } catch (err) { /* ignore */ }
-            log('Cost counter reset to $0.00.', 'info');
-        });
-
-        $id('zdf-vforget').addEventListener('click', () => {
-            setVisionKey('');
-            $id('zdf-vkey').value = '';
-            log('Removed the stored API key from this browser.', 'info');
-        });
 
         $id('zdf-forget').addEventListener('click', () => {
             roster = null;
