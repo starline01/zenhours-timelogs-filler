@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.12.0
+// @version      1.13.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -1006,6 +1006,60 @@
         }
 
         return { filledRows, filledFields, missingRows, skipped, blanksLeft, overnightFields, savedRows, notSaved };
+    }
+
+    /**
+     * Click Edit then Save on every row that is ALREADY complete, changing
+     * nothing — the same thing you would do by hand to commit a row.
+     *
+     * Completeness is the whole safety rule. Zenoras prefills an empty field
+     * with the row's date at 12:00 AM, so clicking Edit then Save on a row with
+     * any blank column records a midnight punch that reads as a real one. This
+     * refuses those rows, and says which column stopped each of them. It needs
+     * neither the paste box nor a loaded roster: it only re-commits what the
+     * page already shows.
+     */
+    async function runResave(opts, log) {
+        let committed = 0, incomplete = 0, busy = 0, failed = 0;
+        const dates = Array.from(indexRows().keys()).sort();
+
+        for (const date of dates) {
+            const tr = indexRows().get(date);
+            if (!tr) continue;
+
+            // A row already open has inputs, not display text, so there is no
+            // way to tell a real value from the prefilled 12:00 AM. Leave it.
+            if (isEditing(tr)) {
+                log(`· ${date} — already open for editing, left alone`, 'warn');
+                busy++;
+                continue;
+            }
+
+            const state = displayState(tr);
+            const missing = COLUMNS.filter((c) => !state[c]);
+            if (missing.length) {
+                incomplete++;
+                log(`· ${date} — skipped, ${missing.map((c) => COLUMN_LABELS[c]).join(', ')} still blank`, 'info');
+                continue;
+            }
+
+            const open = await ensureEditMode(date);
+            if (!open) {
+                failed++;
+                log(`✗ ${date} — could not open Edit`, 'err');
+                continue;
+            }
+            if (await saveRow(date)) {
+                committed++;
+                log(`✓ ${date} — re-saved, values unchanged`, 'ok');
+            } else {
+                failed++;
+                log(`✗ ${date} — Save did not complete; the row is still open`, 'err');
+            }
+            await sleep(opts.saveDelay);
+        }
+
+        return { committed, incomplete, busy, failed };
     }
 
     function undoFill(log) {
@@ -2523,6 +2577,7 @@
                     <button id="zdf-fill" class="zdf-primary">Fill &amp; Save all</button>
                 </div>
                 <div class="zdf-btns">
+                    <button id="zdf-resave" title="Click Edit then Save on every row that already has all six times, changing nothing. Rows with any blank column are skipped.">Edit + Save (no edits)</button>
                     <button id="zdf-undo">Undo fill</button>
                     <button id="zdf-diag">Copy diagnostics</button>
                     <button id="zdf-clear">Clear log</button>
@@ -2885,6 +2940,37 @@
 
         $id('zdf-test').addEventListener('click', () => doFill(true));
         $id('zdf-fill').addEventListener('click', () => doFill(false));
+        $id('zdf-resave').addEventListener('click', async () => {
+            logBox.innerHTML = '';
+            const total = indexRows().size;
+            if (!total) { log('No dated rows on this page.', 'err'); status('Nothing to re-save.'); return; }
+
+            log('Re-saving rows that are already complete — Edit, then Save, nothing changed.', 'info');
+            log('Rows with any blank column are skipped: Zenoras prefills those with 12:00 AM, '
+                + 'and saving that records a midnight punch.', 'warn');
+
+            const buttons = panel.querySelectorAll('.zdf-btns button');
+            buttons.forEach((b) => (b.disabled = true));
+            status(`Checking ${total} row(s)…`);
+            try {
+                const r = await runResave({ saveDelay: 250 }, log);
+                const bits = [`${r.committed} row(s) re-saved`];
+                if (r.incomplete) bits.push(`${r.incomplete} skipped as incomplete`);
+                if (r.busy) bits.push(`${r.busy} already open`);
+                if (r.failed) bits.push(`${r.failed} failed`);
+                log(bits.join(', ') + '.', r.failed ? 'warn' : 'ok');
+                if (!r.committed && r.incomplete) {
+                    log('Nothing was complete enough to re-save. Fill the blank columns first.', 'warn');
+                }
+                status(`Re-saved ${r.committed} of ${total} row(s).`);
+            } catch (err) {
+                log('Re-save failed: ' + (err && err.message ? err.message : String(err)), 'err');
+                status('Re-save failed.');
+            } finally {
+                buttons.forEach((b) => (b.disabled = false));
+            }
+        });
+
         $id('zdf-undo').addEventListener('click', () => undoFill(log));
         $id('zdf-clear').addEventListener('click', () => { logBox.innerHTML = ''; status('Ready.'); });
 

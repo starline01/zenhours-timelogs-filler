@@ -108,6 +108,32 @@ Every row is committed to Zenoras as it is filled. What that means in practice:
 - **Test 1st day never saves** — it exists to let you check one row, and a whole
   client file, before committing anything.
 
+### Edit + Save (no edits)
+
+Clicks **Edit** then **Save** on every row that already has all six times,
+changing nothing — the same thing you would do by hand to commit a row.
+
+**It only touches complete rows, and that is the whole point.** Zenoras prefills
+an empty field with the row's date at 12:00 AM, so clicking Edit then Save on a
+row with any blank column records a midnight punch that reads like a real one.
+A row missing even one column is skipped, and the log names the columns that
+stopped it:
+
+```
+✓ 2026-08-01 — re-saved, values unchanged
+· 2026-08-04 — skipped, Lunch Out, Lunch In, Break Out, Break In still blank
+3 row(s) re-saved, 11 skipped as incomplete.
+```
+
+It reads the page and nothing else — no paste box, no loaded workbook, no
+employee selection. A row already open for editing is left alone, because once
+inputs replace the display text there is no way to tell a real value from the
+prefill. Each save is confirmed the same way as a fill run: by waiting for the
+row to leave edit mode.
+
+There is nothing to undo, since the values written back are the ones already
+there.
+
 ---
 
 ## Loading a whole workbook (all employees)
