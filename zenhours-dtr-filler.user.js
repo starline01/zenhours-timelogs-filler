@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.10.0
+// @version      1.11.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -2418,8 +2418,17 @@
     //  header the request never leaves, the browser blocks it on CORS.
 
     const VISION_URL = 'https://api.anthropic.com/v1/messages';
-    const VISION_MODEL = 'claude-opus-5';
+    // Output tokens are about 85% of what a card costs — thinking counts as
+    // output — so the model is the only lever that moves the bill much.
+    // Prices are dollars per million tokens, from the published rate card.
+    const VISION_MODELS = {
+        'claude-sonnet-5': { label: 'Sonnet 5 — cheaper', inRate: 2, outRate: 10 },
+        'claude-opus-5': { label: 'Opus 5 — most accurate', inRate: 5, outRate: 25 }
+    };
+    const VISION_MODEL_DEFAULT = 'claude-sonnet-5';
     const VISION_KEY_STORE = 'zdf.visionkey.v1';
+    const VISION_MODEL_STORE = 'zdf.visionmodel.v1';
+    const VISION_SPEND_STORE = 'zdf.visionspend.v1';
     const VISION_MAX_EDGE = 1568;          // past this the model gains nothing and tokens cost more
 
     // The shape the model must answer in. Punches stay a plain chronological
@@ -2481,6 +2490,34 @@
         try { k ? localStorage.setItem(VISION_KEY_STORE, k) : localStorage.removeItem(VISION_KEY_STORE); }
         catch (e) { /* storage blocked — the key just will not persist */ }
     }
+    function visionModel() {
+        let m = '';
+        try { m = localStorage.getItem(VISION_MODEL_STORE) || ''; } catch (e) { /* ignore */ }
+        return VISION_MODELS[m] ? m : VISION_MODEL_DEFAULT;
+    }
+    function setVisionModel(m) {
+        try { localStorage.setItem(VISION_MODEL_STORE, m); } catch (e) { /* ignore */ }
+    }
+
+    /** What a reading actually cost, in dollars, from the usage the API reports. */
+    function visionCost(usage, model) {
+        const price = VISION_MODELS[model];
+        if (!price || !usage) return 0;
+        const inTok = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+            + (usage.cache_read_input_tokens || 0);
+        return (inTok * price.inRate + (usage.output_tokens || 0) * price.outRate) / 1e6;
+    }
+
+    /** Running total since it was last reset, so the bill is never a surprise. */
+    function visionSpend(add) {
+        let total = 0;
+        try { total = parseFloat(localStorage.getItem(VISION_SPEND_STORE)) || 0; } catch (e) { /* ignore */ }
+        if (typeof add === 'number') {
+            total += add;
+            try { localStorage.setItem(VISION_SPEND_STORE, String(total)); } catch (e) { /* ignore */ }
+        }
+        return total;
+    }
 
     /**
      * Re-encode the photo as a JPEG no longer than VISION_MAX_EDGE on its long
@@ -2516,7 +2553,7 @@
     }
 
     /** Send the card to the model and return its structured reading. */
-    async function visionReadCard(file, apiKey, onProgress) {
+    async function visionReadCard(file, apiKey, model, onProgress) {
         const img = await imageForVision(file);
         if (onProgress) onProgress(`Uploading ${img.w}x${img.h}, ~${img.kb} KB…`);
 
@@ -2532,7 +2569,7 @@
                     'anthropic-dangerous-direct-browser-access': 'true'
                 },
                 body: JSON.stringify({
-                    model: VISION_MODEL,
+                    model: model,
                     max_tokens: 16000,
                     thinking: { type: 'adaptive' },
                     output_config: { format: { type: 'json_schema', schema: VISION_SCHEMA } },
@@ -2666,8 +2703,8 @@
         background: #191b22; }
     #zdf-vision .zdf-vhead { color: #e0b563; font-weight: 600; margin-bottom: 3px; }
     #zdf-vision .zdf-vnote { color: #9aa3b4; margin-bottom: 6px; line-height: 1.4; }
-    #zdf-vision input[type=password] { width: 100%; box-sizing: border-box; margin-bottom: 6px;
-        padding: 5px 6px; border: 1px solid #39404f; border-radius: 4px;
+    #zdf-vision input[type=password], #zdf-vision select { width: 100%; box-sizing: border-box;
+        margin-bottom: 6px; padding: 5px 6px; border: 1px solid #39404f; border-radius: 4px;
         background: #11141c; color: #e8e8e8; font: inherit; }
     #zdf-vision .zdf-btns { margin-bottom: 0; }
     .zdf-file { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
@@ -2731,10 +2768,12 @@
                 <div id="zdf-vision" hidden>
                     <div class="zdf-vhead">Handwritten card — read it with Claude?</div>
                     <div class="zdf-vnote">This uploads the picture to Anthropic. Nothing has been sent yet.</div>
+                    <select id="zdf-vmodel"></select>
                     <input type="password" id="zdf-vkey" spellcheck="false" placeholder="Anthropic API key (sk-ant-…)">
                     <div class="zdf-btns">
                         <button id="zdf-vrun" class="zdf-primary">Read with Claude</button>
                         <button id="zdf-vforget" title="Remove the stored key from this browser">Forget key</button>
+                        <button id="zdf-vreset" title="Reset the running cost counter">Reset $</button>
                     </div>
                 </div>
                 <div id="zdf-roster">
@@ -2945,6 +2984,13 @@
             const box = $id('zdf-vision');
             box.hidden = false;
             $id('zdf-vkey').value = visionKey();
+            const sel = $id('zdf-vmodel');
+            if (!sel.options.length) {
+                Object.keys(VISION_MODELS).forEach((id) => {
+                    sel.add(new Option(VISION_MODELS[id].label, id));
+                });
+            }
+            sel.value = visionModel();
             log('Claude can read handwriting that this OCR cannot — the button below sends '
                 + 'this one picture to Anthropic. It has not been sent.', 'info');
         }
@@ -2961,12 +3007,15 @@
                     + 'use a key of its own with a low spend limit, not your main one.', 'warn');
             }
 
+            const model = $id('zdf-vmodel').value || VISION_MODEL_DEFAULT;
+            setVisionModel(model);
+
             const buttons = panel.querySelectorAll('.zdf-btns button');
             buttons.forEach((b) => (b.disabled = true));
-            log(`Sending ${file.name} to Claude…`, 'info');
+            log(`Sending ${file.name} to ${VISION_MODELS[model].label.split(' — ')[0]}…`, 'info');
             status('Reading with Claude…');
             try {
-                const data = await visionReadCard(file, key, (msg) => status(msg));
+                const data = await visionReadCard(file, key, model, (msg) => status(msg));
                 const pageDates = Array.from(indexRows().keys());
                 const res = visionToLines(data, pageDates);
 
@@ -2992,10 +3041,17 @@
                 if (res.unreadable) {
                     log(`${res.unreadable} cell(s) came back as ${UNREADABLE} — Claude was not sure of those, `
                         + 'and they will NOT be filled until you type them in.', 'warn');
+                    if (model !== 'claude-opus-5' && res.unreadable > 2) {
+                        log('  That is a lot of unsure cells. Switching to Opus 5 above and reading this card '
+                            + 'again may recover them — worth the extra cost on a bad card, not on every card.', 'info');
+                    }
                 }
                 const u = data.usage || {};
                 if (u.input_tokens) {
-                    log(`  (${u.input_tokens} tokens in, ${u.output_tokens || 0} out)`, 'info');
+                    const cost = visionCost(u, model);
+                    const total = visionSpend(cost);
+                    log(`  cost $${cost.toFixed(3)} (${u.input_tokens} tokens in, ${u.output_tokens || 0} out)`
+                        + ` — $${total.toFixed(2)} since the counter was last reset.`, 'info');
                 }
                 log('Check every value against the card before filling.', 'warn');
                 status(`Claude read ${res.lines.length} rows — review them, then Fill.`);
@@ -3074,6 +3130,11 @@
         }
 
         $id('zdf-vrun').addEventListener('click', runVision);
+
+        $id('zdf-vreset').addEventListener('click', () => {
+            try { localStorage.removeItem(VISION_SPEND_STORE); } catch (err) { /* ignore */ }
+            log('Cost counter reset to $0.00.', 'info');
+        });
 
         $id('zdf-vforget').addEventListener('click', () => {
             setVisionKey('');

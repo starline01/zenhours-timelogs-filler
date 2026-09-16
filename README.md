@@ -318,14 +318,40 @@ left blank rather than guessed, and the log says which row.
 The model is told never to guess a digit: a wrong time becomes wrong pay, while
 a `??:??` is one cell to type by hand.
 
-**The API key.** You need an Anthropic API key (console.anthropic.com). It is
+**The API key.** You need an Anthropic API key (console.claude.com). It is
 stored in this browser's `localStorage` for the Zenoras domain, which means
 **any script running on that site can read it** — so use a key created for this
-tool alone, with a low spend limit, never your main one. **Forget key** removes
-it. Roughly $0.05–$0.10 per card at current Opus pricing; a fortnight of 47
-guards is a few dollars.
+tool alone, with a spend limit, never your main one. **Forget key** removes it.
+
+Spend limits attach to a **workspace**, not to a key, and they can't be set on
+the default workspace. So: Settings → Workspaces → create one for this tool,
+set its spend limit, then create the key **inside that workspace**.
 
 Nothing about the key or the cloud path is committed to this repo.
+
+#### What it costs
+
+Pick the model in the panel. The choice is remembered.
+
+| Model | Per card | 200 cards/month |
+|---|---|---|
+| **Sonnet 5** (default) | ~$0.035 | ~$7 |
+| Opus 5 | ~$0.088 | ~$18 |
+
+A card is about 2,800 input tokens — the image is ~2,300 of those — and ~3,000
+output. **Output is roughly 85% of the bill**, because thinking tokens are billed
+as output. That is why the model is the only lever that moves the cost much:
+shrinking the image further saves pennies and costs legibility.
+
+Every reading logs what it actually cost, plus a running total since the counter
+was last reset (**Reset $** clears it). Those are real figures from the usage the
+API reports back, not estimates — measure a few cards before setting a budget.
+
+Sonnet 5 is the default because the expensive failure here is a *confident wrong
+digit*, and the model is told to answer `??:??` rather than guess. When a card
+does come back with more than a couple of unsure cells, the log suggests
+re-reading that one card on Opus 5 — worth the extra few cents on a bad card,
+not on every card.
 
 ### Excel support
 
