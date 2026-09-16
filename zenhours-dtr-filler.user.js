@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.15.0
+// @version      1.16.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -449,7 +449,15 @@
     //     --:--
     //     09/06/2026 04:21 PM
 
-    const SCHEDULE_RE = /^\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s+to\s+\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s*/i;
+    // The shift pattern copies either as "9:45 AM to 5:45 PM" or as "09:00-17:00".
+    // Both are ranges; a punch is always a single time, so neither can be confused
+    // for one.
+    const SCHEDULE_RE = /^\d{1,2}[:.]\d{2}\s*(?:[ap]\.?m\.?)?\s*(?:to|[-\u2013\u2014])\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?m\.?)?\s*/i;
+
+    // How the page renders a punch that was never recorded. Deliberately stricter
+    // than isBlankText: a bare "-" in a spreadsheet means "clear this column",
+    // which is a different instruction and must keep its meaning.
+    const PAGE_BLANK_RE = /^-{2,}\s*[:.]\s*-{2,}$/;
     const HAS_TIME_RE = /\d{1,2}[:.]\d{2}/;
 
     // Selecting rows on the page copies their controls too — the Edit link, and
@@ -487,11 +495,28 @@
         return { date: null, time: norm(token) };
     }
 
+    /**
+     * A whole day on one tab-separated line, straight off the page:
+     *
+     *     2026-09-01  09:00-17:00  --:--  --:--  --:--  --:--  --:--  --:--  Edit
+     *
+     * Told apart from a spreadsheet row by the page's own marks — an Edit link,
+     * a schedule range, or the "--:--" it prints for a punch that was never
+     * recorded. A spreadsheet row carries none of those, so it keeps its own
+     * meaning, where a dash says "clear this column" rather than "this is missing".
+     */
+    function isPageRow(fields) {
+        if (fields.length < 3) return false;
+        if (HAS_TIME_RE.test(fields[0]) || !parseDate(fields[0], null)) return false;
+        return fields.slice(1).some((f) => PAGE_WORDS.test(f) || SCHEDULE_RE.test(f) || PAGE_BLANK_RE.test(f));
+    }
+
     /** Does this paste look like a copy of the page rather than a spreadsheet? */
     function looksLikePageCopy(lines) {
         let bareDates = 0, lonePunches = 0;
         for (const line of lines) {
             const fields = tabFields(line);
+            if (isPageRow(fields)) return true;
             if (fields.length !== 1) continue;
             const f = fields[0].replace(SCHEDULE_RE, '');
             if (!f) continue;
@@ -517,12 +542,20 @@
             const fields = tabFields(line);
             if (!fields.length) return;
 
-            if (fields.length === 1 && !HAS_TIME_RE.test(fields[0])) {
+            // A leading date opens a day. It may sit alone on its line with the
+            // punches beneath it, or carry the whole row after it — same handling
+            // either way, so both shapes read through one path.
+            let rest = fields;
+            if (!HAS_TIME_RE.test(fields[0])) {
                 const d = parseDate(fields[0], fallbackYear);
-                if (d) { cur = { date: d, tokens: [], line: i + 1 }; blocks.push(cur); return; }
+                if (d) {
+                    cur = { date: d, tokens: [], line: i + 1 };
+                    blocks.push(cur);
+                    rest = fields.slice(1);
+                }
             }
             if (!cur) return;                      // anything before the first date is a heading
-            fields.forEach((f) => {
+            rest.forEach((f) => {
                 // The schedule ("9:45 AM to 5:45 PM") often leads the line the
                 // first punch is on. Strip it; whatever follows is a punch.
                 const rest = norm(f.replace(SCHEDULE_RE, (m) => { cur.schedule = norm(m); return ''; }));
@@ -573,7 +606,10 @@
                 times[col] = t;
             });
 
-            if (!Object.keys(times).length) {
+            // A day with no punches at all is not an empty result — it is a day
+            // nobody recorded, which is exactly what the gap grid is for. Only a
+            // block with neither times nor gaps has genuinely nothing to say.
+            if (!Object.keys(times).length && !gaps.length) {
                 out.warnings.push(`${block.date}: nothing readable under this date — skipped`);
                 continue;
             }
@@ -3162,7 +3198,25 @@
             const { entries } = currentParse();
             if (!entries.length) { log('No rows parsed.', 'err'); status('Nothing to fill.'); return; }
 
-            const list = limitToFirst ? entries.slice(0, 1) : entries;
+            // A row the page showed as "--:--" is missing a punch, not blank by
+            // choice. Filling it here would clear the gap column and commit the
+            // row, spending the one chance to enter what is actually missing, so
+            // it is held back for the grid instead.
+            const held = entries.filter((e) => (e.gaps || []).length);
+            const ready = entries.filter((e) => !(e.gaps || []).length);
+            if (held.length) {
+                log(`${held.length} row(s) have missing punches and are NOT filled here — `
+                    + 'click Parse and complete them in the grid.', 'warn');
+                held.slice(0, 8).forEach((e) => log(`  · ${e.date} — ${e.gaps.map((c) => COLUMN_LABELS[c]).join(', ')}`, 'info'));
+                if (held.length > 8) log(`  · …and ${held.length - 8} more.`, 'info');
+            }
+            if (!ready.length) {
+                log('Every parsed row is missing at least one punch. Nothing was filled.', 'err');
+                status('All rows need the grid.');
+                return;
+            }
+
+            const list = limitToFirst ? ready.slice(0, 1) : ready;
             // Saving is no longer optional. "Test 1st day" stays a preview so a
             // new client file can still be checked before anything is committed.
             const autoSave = !limitToFirst;

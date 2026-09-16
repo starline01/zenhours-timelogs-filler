@@ -144,6 +144,22 @@ words go quietly; anything else unexpected is dropped too but named in the log,
 so stray text is never swallowed silently. The one exception is `--:--`, which
 has no digits either and must keep its column — it is the gap itself.
 
+The page also copies a whole day onto **one tab-separated line**, and that is
+read the same way:
+
+```
+2026-09-01   09:00-17:00   --:--  --:--  --:--  --:--  --:--  --:--   Edit
+```
+
+A day with **no punches at all** is still a row — it goes to the grid with all
+six cells open, rather than being discarded as an empty result. Both schedule
+notations are recognised (`09:00-17:00` and `9:00 AM to 5:00 PM`).
+
+This shape is told apart from a spreadsheet row by the page's own marks: an
+**Edit** link, a schedule range, or the literal `--:--`. A spreadsheet row
+carries none of those, so it keeps its own meaning — there, a bare `-` still
+says *clear this column*, not *this is missing*.
+
 ### Filling the gaps
 
 Any row with a `--:--` in it appears in an editable grid, with the missing cells
@@ -164,6 +180,9 @@ outlined. Type the real times, then use the grid's own button:
   and nothing is written — a typo in a payroll field is not worth a partial fill.
 - **Complete rows are not put in the grid** and are not filled by its button.
   They go through **Fill & Save all** as usual, so the two never collide.
+- **Rows with gaps are held back from Fill & Save all**, which names them and
+  fills the rest. Filling one there would clear the gap column and commit the
+  row, spending the one chance to enter what is actually missing.
 
 ### Edit + Save (no edits)
 
