@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.14.0
+// @version      1.15.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -452,6 +452,15 @@
     const SCHEDULE_RE = /^\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s+to\s+\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s*/i;
     const HAS_TIME_RE = /\d{1,2}[:.]\d{2}/;
 
+    // Selecting rows on the page copies their controls too — the Edit link, and
+    // whatever else sits in the row. None of it is a punch, and left in place it
+    // would take a column and push a real time out of one, so it is dropped.
+    // The general rule behind the list: a token with no digit in it was never a
+    // time. The list exists so the common words go quietly, while unexpected
+    // text is still reported.
+    const PAGE_WORDS = /^(edit|save|cancel|delete|remove|view|details?|actions?|no schedule|schedule|rest\s*day|day\s*off)$/i;
+    const HAS_DIGIT_RE = /\d/;
+
     // Only a TAB separates values here. A punch is "09/06/2026 09:37 AM" — one
     // value containing spaces — so splitting on whitespace tears the date off
     // the time and shifts every column after it.
@@ -501,6 +510,7 @@
     function parsePageCopy(text, fallbackYear) {
         const out = { entries: [], warnings: [], mapping: 'copied from the Zenoras page', overnightRows: 0 };
         const blocks = [];
+        const ignored = [];
         let cur = null;
 
         String(text || '').split(/\r?\n/).forEach((line, i) => {
@@ -515,10 +525,22 @@
             fields.forEach((f) => {
                 // The schedule ("9:45 AM to 5:45 PM") often leads the line the
                 // first punch is on. Strip it; whatever follows is a punch.
-                const rest = f.replace(SCHEDULE_RE, (m) => { cur.schedule = norm(m); return ''; });
-                if (rest) cur.tokens.push(rest);
+                const rest = norm(f.replace(SCHEDULE_RE, (m) => { cur.schedule = norm(m); return ''; }));
+                if (!rest) return;
+                // A gap marker has no digits either, and it is the one piece of
+                // non-time text that must keep its column.
+                if (isBlankText(rest)) { cur.tokens.push(rest); return; }
+                if (PAGE_WORDS.test(rest)) return;                    // the row's own controls
+                if (!HAS_DIGIT_RE.test(rest)) { ignored.push(rest); return; }
+                cur.tokens.push(rest);
             });
         });
+
+        if (ignored.length) {
+            const distinct = Array.from(new Set(ignored)).slice(0, 6);
+            out.warnings.push(`ignored text that is not a time: ${distinct.join(', ')}`
+                + (ignored.length > distinct.length ? ', …' : ''));
+        }
 
         for (const block of blocks) {
             const times = {}, blanks = [], gaps = [];

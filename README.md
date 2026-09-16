@@ -134,7 +134,15 @@ Two things this format gives you that a spreadsheet does not:
   The overnight roll only runs on blocks the page gave bare times for.
 
 The schedule line (`9:45 AM to 5:45 PM`) is recognised and ignored — it is a
-shift pattern, not a punch.
+shift pattern, not a punch. So are the row's own controls: selecting rows on the
+page drags along their **Edit** link (and **Save** / **Cancel** / **No Schedule**
+if they are showing). Leave them in — they are dropped, and they never take a
+column from a real punch.
+
+The rule behind that: a value with no digit in it was never a time. Known page
+words go quietly; anything else unexpected is dropped too but named in the log,
+so stray text is never swallowed silently. The one exception is `--:--`, which
+has no digits either and must keep its column — it is the gap itself.
 
 ### Filling the gaps
 
