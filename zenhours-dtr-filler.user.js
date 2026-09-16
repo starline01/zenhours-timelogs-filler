@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.13.0
+// @version      1.14.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -436,10 +436,143 @@
      * `blanks` are columns you deliberately left empty or dashed.
      * Detects an optional header line and remaps columns by name when present.
      */
+    // ── Layout: copied straight off the Zenoras page ──────────────────────
+    // The grid copies as one day per block: the date alone on its line, then
+    // the schedule, then one punch per line. A punch that was never recorded
+    // copies as "--:--", which is the whole reason this format is worth
+    // reading — it shows you exactly which cells are missing.
+    //
+    //     2026-09-06
+    //     9:45 AM to 5:45 PM      09/06/2026 09:37 AM
+    //     09/06/2026 11:47 AM
+    //     ...
+    //     --:--
+    //     09/06/2026 04:21 PM
+
+    const SCHEDULE_RE = /^\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s+to\s+\d{1,2}[:.]\d{2}\s*[ap]\.?m\.?\s*/i;
+    const HAS_TIME_RE = /\d{1,2}[:.]\d{2}/;
+
+    // Only a TAB separates values here. A punch is "09/06/2026 09:37 AM" — one
+    // value containing spaces — so splitting on whitespace tears the date off
+    // the time and shifts every column after it.
+    const tabFields = (line) => String(line == null ? '' : line).split('\t')
+        .map(norm).filter((f) => f !== '');
+
+    /** Whole days from one ISO date to another. */
+    function daysBetween(fromIso, toIso) {
+        const at = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+        return Math.round((at(toIso) - at(fromIso)) / 86400000);
+    }
+
+    /**
+     * Split "09/06/2026 09:37 AM" into its date and time halves. A punch that
+     * carries its own date is the page telling us which day it belongs to, so
+     * an overnight Time Out needs no guessing.
+     */
+    function splitPunchToken(token, fallbackYear) {
+        const m = norm(token).match(/^(\S+)\s+(.+)$/);
+        if (m) {
+            const d = parseDate(m[1], fallbackYear);
+            if (d && parseTime(m[2])) return { date: d, time: m[2] };
+        }
+        return { date: null, time: norm(token) };
+    }
+
+    /** Does this paste look like a copy of the page rather than a spreadsheet? */
+    function looksLikePageCopy(lines) {
+        let bareDates = 0, lonePunches = 0;
+        for (const line of lines) {
+            const fields = tabFields(line);
+            if (fields.length !== 1) continue;
+            const f = fields[0].replace(SCHEDULE_RE, '');
+            if (!f) continue;
+            if (!HAS_TIME_RE.test(f) && parseDate(f, null)) bareDates++;
+            else if (parseTime(f) || isBlankText(f) || splitPunchToken(f, null).date) lonePunches++;
+        }
+        return bareDates >= 1 && lonePunches >= 2;
+    }
+
+    /**
+     * Read the page-copy layout. Punches map to the six columns by position,
+     * because that is the order the page prints them in; a "--:--" holds its
+     * place rather than shifting the ones after it, and is reported as a gap
+     * for you to fill in rather than being silently dropped.
+     */
+    function parsePageCopy(text, fallbackYear) {
+        const out = { entries: [], warnings: [], mapping: 'copied from the Zenoras page', overnightRows: 0 };
+        const blocks = [];
+        let cur = null;
+
+        String(text || '').split(/\r?\n/).forEach((line, i) => {
+            const fields = tabFields(line);
+            if (!fields.length) return;
+
+            if (fields.length === 1 && !HAS_TIME_RE.test(fields[0])) {
+                const d = parseDate(fields[0], fallbackYear);
+                if (d) { cur = { date: d, tokens: [], line: i + 1 }; blocks.push(cur); return; }
+            }
+            if (!cur) return;                      // anything before the first date is a heading
+            fields.forEach((f) => {
+                // The schedule ("9:45 AM to 5:45 PM") often leads the line the
+                // first punch is on. Strip it; whatever follows is a punch.
+                const rest = f.replace(SCHEDULE_RE, (m) => { cur.schedule = norm(m); return ''; });
+                if (rest) cur.tokens.push(rest);
+            });
+        });
+
+        for (const block of blocks) {
+            const times = {}, blanks = [], gaps = [];
+            let datedPunches = 0;
+
+            if (!block.tokens.length) {
+                out.warnings.push(`${block.date}: no punches under this date — skipped`);
+                continue;
+            }
+            if (block.tokens.length !== COLUMNS.length) {
+                out.warnings.push(`${block.date}: ${block.tokens.length} value(s) under this date, expected `
+                    + `${COLUMNS.length} — columns are matched in order, so check this row`);
+            }
+
+            block.tokens.slice(0, COLUMNS.length).forEach((token, idx) => {
+                const col = COLUMNS[idx];
+                if (isBlankText(token) || norm(token) === '') { blanks.push(col); gaps.push(col); return; }
+
+                const { date, time } = splitPunchToken(token, fallbackYear);
+                const t = parseTime(time);
+                if (!t) {
+                    out.warnings.push(`${block.date}: could not read "${token}" as a time — `
+                        + `${COLUMN_LABELS[col]} left for you to fill`);
+                    blanks.push(col);
+                    gaps.push(col);
+                    return;
+                }
+                // A punch that carries its own date says which day it lands on.
+                if (date) { t.plus = daysBetween(block.date, date); datedPunches++; }
+                times[col] = t;
+            });
+
+            if (!Object.keys(times).length) {
+                out.warnings.push(`${block.date}: nothing readable under this date — skipped`);
+                continue;
+            }
+            // Only guess at overnight rolls when the page gave no dates to go on.
+            if (!datedPunches) applyOvernightRoll(times);
+            if (COLUMNS.some((c) => times[c] && times[c].plus)) out.overnightRows++;
+
+            out.entries.push({ date: block.date, times, blanks, gaps, schedule: block.schedule || '' });
+        }
+
+        return out;
+    }
+
     function parsePaste(text, fallbackYear) {
         const out = { entries: [], warnings: [], mapping: null, overnightRows: 0 };
         const lines = String(text || '').split(/\r?\n/).filter((l) => norm(l) !== '');
         if (!lines.length) return out;
+
+        // A copy of the page itself is a different shape entirely: one day per
+        // block, one punch per line. Read it with its own parser.
+        if (looksLikePageCopy(lines)) return parsePageCopy(text, fallbackYear);
 
         let columnOrder = null;     // null = no header, map positionally after stripping labels
         let startIndex = 0;
@@ -2487,6 +2620,22 @@
         font-size: 11.5px; white-space: pre; overflow-x: auto; }
     #zdf-paste:focus { outline: 1px solid #5b6c8f; outline-offset: 0; border-color: #5b6c8f; }
     .zdf-hint { opacity: .7; font-size: 11px; margin: 6px 0 8px; }
+    #zdf-panel.zdf-wide { width: min(620px, calc(100vw - 24px)); }
+    #zdf-grid { margin-bottom: 8px; padding: 8px; border: 1px solid #5c4a2e; border-radius: 4px;
+        background: #191b22; }
+    #zdf-grid .zdf-ghead { color: #e0b563; font-weight: 600; margin-bottom: 6px; }
+    #zdf-grid .zdf-gnote { color: #9aa3b4; margin: 6px 0; line-height: 1.4; }
+    .zdf-gwrap { overflow-x: auto; }
+    #zdf-gtable { border-collapse: collapse; width: 100%; }
+    #zdf-gtable th { color: #9aa3b4; font-weight: 600; text-align: center; padding: 2px 3px;
+        font-size: 10px; white-space: nowrap; }
+    #zdf-gtable td { padding: 1px 2px; }
+    #zdf-gtable td.zdf-gdate { color: #e8e8e8; white-space: nowrap; padding-right: 6px; }
+    #zdf-gtable input { width: 100%; min-width: 52px; box-sizing: border-box; padding: 4px 3px;
+        border: 1px solid #39404f; border-radius: 3px; background: #11141c; color: #e8e8e8;
+        font: inherit; text-align: center; }
+    #zdf-gtable input.zdf-gap { border-color: #7a5c2a; background: #221c12; }
+    #zdf-gtable input.zdf-bad { border-color: #8f4b4b; background: #241414; }
     .zdf-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
     .zdf-btns button { flex: 1 1 auto; padding: 6px 8px; border-radius: 4px; border: 1px solid #39404f;
         background: #2a3140; color: #e8e8e8; cursor: pointer; font-size: 11.5px; }
@@ -2571,6 +2720,16 @@
                     placeholder="Paste from Excel — one day per line:&#10;8/1/2026&#9;TUESDAY&#9;10:20&#9;12:40&#9;13:12&#9;17:00&#9;17:30&#9;21:00&#10;8/2/2026&#9;WEDNESDAY&#9;10:25&#9;12:45&#9;13:15&#9;16:39&#9;17:09&#9;21:00"></textarea>
                 <div class="zdf-hint">Date · <i>(day name — ignored)</i> · Time In · Lunch Out · Lunch In · Break Out · Break In · Time Out<br>
                     24-hour or AM/PM both work. Leave a cell empty or put a dash to skip that column.</div>
+                <div id="zdf-grid" hidden>
+                    <div class="zdf-ghead">Rows with missing punches — type the gaps, then fill</div>
+                    <div class="zdf-gwrap"><table id="zdf-gtable"></table></div>
+                    <div class="zdf-gnote">Filling these <b>overwrites</b> whatever those rows currently
+                        show on the page. Leave a cell blank to clear that column instead.</div>
+                    <div class="zdf-btns">
+                        <button id="zdf-gfill" class="zdf-primary">Fill &amp; Save these rows</button>
+                        <button id="zdf-gclose">Dismiss</button>
+                    </div>
+                </div>
                 <div class="zdf-btns">
                     <button id="zdf-parse">Parse</button>
                     <button id="zdf-test">Test 1st day</button>
@@ -2627,6 +2786,72 @@
                 // Never carry one employee's times to the next page (see above).
                 paste: roster ? '' : $id('zdf-paste').value.slice(0, 20000)
             });
+        }
+
+        // ── The gap grid ────────────────────────────────────────────────
+        // A row copied off the page with "--:--" in it is missing a punch. Rather
+        // than fill a hole with a guess, the row is put here to be completed by
+        // hand, and only then written back — over whatever the page shows now.
+        const gridTable = $id('zdf-gtable');
+
+        function hideGrid() {
+            $id('zdf-grid').hidden = true;
+            panel.classList.remove('zdf-wide');
+            gridTable.innerHTML = '';
+        }
+
+        function showGrid(entries) {
+            gridTable.innerHTML = '';
+            const head = document.createElement('tr');
+            head.innerHTML = '<th></th>' + COLUMNS.map((c) =>
+                `<th>${COLUMN_LABELS[c].replace('Lunch', 'L.').replace('Break', 'B.').replace('Time ', '')}</th>`).join('');
+            gridTable.appendChild(head);
+
+            for (const e of entries) {
+                const tr = document.createElement('tr');
+                tr.dataset.date = e.date;
+                const cells = COLUMNS.map((col) => {
+                    const t = e.times[col];
+                    const gap = (e.gaps || []).includes(col);
+                    const val = t ? `${pad2(t.h)}:${pad2(t.m)}${t.plus ? '+' + t.plus : ''}` : '';
+                    return `<td><input data-col="${col}" value="${val}"`
+                        + ` class="${gap ? 'zdf-gap' : ''}" placeholder="--:--"`
+                        + ` title="${COLUMN_LABELS[col]} on ${e.date}"></td>`;
+                }).join('');
+                tr.innerHTML = `<td class="zdf-gdate">${e.date.slice(5)}</td>` + cells;
+                gridTable.appendChild(tr);
+            }
+
+            $id('zdf-grid').hidden = false;
+            panel.classList.add('zdf-wide');
+        }
+
+        /**
+         * Read the grid back. Every cell is re-parsed, so a value you typed is
+         * held to the same standard as one that was imported: unreadable stops
+         * the run rather than writing something plausible into a payroll field.
+         */
+        function readGrid() {
+            const entries = [], bad = [];
+            Array.from(gridTable.querySelectorAll('tr[data-date]')).forEach((tr) => {
+                const date = tr.dataset.date;
+                const times = {}, blanks = [];
+                Array.from(tr.querySelectorAll('input')).forEach((input) => {
+                    const col = input.dataset.col;
+                    input.classList.remove('zdf-bad');
+                    const raw = norm(input.value);
+                    if (raw === '' || isBlankText(raw)) { blanks.push(col); return; }
+                    const t = parseTime(raw);
+                    if (!t) {
+                        input.classList.add('zdf-bad');
+                        bad.push(`${date} ${COLUMN_LABELS[col]}: "${raw}"`);
+                        return;
+                    }
+                    times[col] = t;
+                });
+                if (Object.keys(times).length) entries.push({ date, times, blanks });
+            });
+            return { entries, bad };
         }
 
         function currentParse() {
@@ -2845,8 +3070,58 @@
                 log(`${on ? '✓' : '✗'} ${e.date} → ${preview}`, on ? 'ok' : 'err');
             }
             log(`Table has ${rows.size} dated row(s).`, 'info');
+
+            // Rows the source itself left incomplete go to the grid to be finished.
+            const broken = entries.filter((e) => (e.gaps || []).length && rows.has(e.date));
+            if (broken.length) {
+                showGrid(broken);
+                const cols = broken.reduce((n, e) => n + e.gaps.length, 0);
+                log(`${broken.length} row(s) have ${cols} missing punch(es) — listed above to fill in.`, 'warn');
+                log('Those rows are NOT filled by "Fill & Save all". Complete them in the grid '
+                    + 'and use its own button.', 'info');
+            } else {
+                hideGrid();
+            }
             status(`${entries.length} line(s) parsed · ${found} matched on page.`);
             persist();
+        });
+
+        $id('zdf-gclose').addEventListener('click', hideGrid);
+
+        $id('zdf-gfill').addEventListener('click', async () => {
+            const { entries, bad } = readGrid();
+            logBox.innerHTML = '';
+            if (bad.length) {
+                bad.forEach((b) => log(`✗ could not read ${b}`, 'err'));
+                log('Fix the cells outlined in red, then try again. Nothing was written.', 'err');
+                status('Grid has unreadable values.');
+                return;
+            }
+            if (!entries.length) { log('Nothing in the grid to fill.', 'err'); return; }
+
+            log(`Filling ${entries.length} row(s) from the grid — existing values are overwritten.`, 'warn');
+            const buttons = panel.querySelectorAll('.zdf-btns button');
+            buttons.forEach((b) => (b.disabled = true));
+            status(`Filling ${entries.length} row(s)…`);
+            try {
+                const r = await runFill(entries, {
+                    onlyBlank: false,        // the point of this grid is to replace what is there
+                    openEdit: true,
+                    clearBlanks: true,
+                    autoSave: true,
+                    delay: 120,
+                    saveDelay: 250
+                }, log);
+                log(`Filled ${r.filledRows}, saved ${r.savedRows}.`, r.notSaved.length ? 'warn' : 'ok');
+                r.notSaved.forEach((n) => log(`  ! not saved: ${n}`, 'warn'));
+                status(`Filled ${r.filledRows}, saved ${r.savedRows}.`);
+                if (r.savedRows) hideGrid();
+            } catch (err) {
+                log('Fill failed: ' + (err && err.message ? err.message : String(err)), 'err');
+                status('Fill failed.');
+            } finally {
+                buttons.forEach((b) => (b.disabled = false));
+            }
         });
 
         async function doFill(limitToFirst) {

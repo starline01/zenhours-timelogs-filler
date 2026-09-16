@@ -108,6 +108,55 @@ Every row is committed to Zenoras as it is filled. What that means in practice:
 - **Test 1st day never saves** — it exists to let you check one row, and a whole
   client file, before committing anything.
 
+### Copying straight off the Zenoras page
+
+Select a stretch of the timelogs grid, copy, and paste it in. It copies as one
+day per block — the date alone on its line, then the schedule, then one punch
+per line — and that layout is read directly:
+
+```
+2026-09-06
+
+9:45 AM to 5:45 PM      09/06/2026 09:37 AM
+09/06/2026 11:47 AM
+09/06/2026 12:16 PM
+09/06/2026 03:52 PM
+--:--
+09/06/2026 04:21 PM
+```
+
+Two things this format gives you that a spreadsheet does not:
+
+- **`--:--` is a gap, not a blank.** It means that punch was never recorded, so
+  the row goes to the gap grid below instead of being filled with a hole in it.
+- **Each punch carries its own date**, so a night shift needs no guessing: a
+  Time Out stamped `09/11/2026` on a `2026-09-10` row is written to the 11th.
+  The overnight roll only runs on blocks the page gave bare times for.
+
+The schedule line (`9:45 AM to 5:45 PM`) is recognised and ignored — it is a
+shift pattern, not a punch.
+
+### Filling the gaps
+
+Any row with a `--:--` in it appears in an editable grid, with the missing cells
+outlined. Type the real times, then use the grid's own button:
+
+```
+        In      L.Out   L.In    B.Out   B.In    Out
+09-06   09:37   11:47   12:16   15:52   [    ]  16:21
+09-04   09:33   11:46   12:15   15:32   [    ]  16:01
+```
+
+- **Every cell is editable**, not just the gaps — correct a wrong punch the same
+  way you fill a missing one. `16:05`, `3:45 PM` and `1615H` are all accepted.
+- **Filling from the grid overwrites** what those rows currently show on the
+  page. That is the point of it: these are rows you have just corrected. Leave a
+  cell empty to clear that column instead.
+- **A value it cannot read stops the whole run.** The cell is outlined in red
+  and nothing is written — a typo in a payroll field is not worth a partial fill.
+- **Complete rows are not put in the grid** and are not filled by its button.
+  They go through **Fill & Save all** as usual, so the two never collide.
+
 ### Edit + Save (no edits)
 
 Clicks **Edit** then **Save** on every row that already has all six times,
