@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zenhours DTR Filler
 // @namespace    starlinesecuritygroup.com
-// @version      1.16.0
+// @version      1.17.0
 // @description  Paste or upload a DTR and auto-fill the Zenhours timelogs table, saving each row as it goes.
 // @author       Starline Security Group
 // @match        *://*.zenoras.com/*
@@ -252,7 +252,7 @@
         }
 
         s = s.replace(/^\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}[t ]+/, '');  // drop a leading date
-        s = s.replace(/;/g, ':');                                        // "22;20" -> "22:20"
+        s = s.replace(/[;'"’”]/g, ':');                                 // "22;20", 18"45 -> 22:20, 18:45
         s = s.replace(/h$/i, '').trim();                                 // military "1053H"
 
         const ampmMatch = s.match(/([ap])\.?m\.?/);
@@ -1594,6 +1594,7 @@
 
             // Name and Access ID sit in the few rows above the header.
             let id = '', guard = '';
+            const mappedCols = new Set(Object.keys(map).map((k) => map[k]));
             for (let up = 1; up <= 4 && hr - up >= 0 && !id; up++) {
                 for (let c = rng.s.c; c <= rng.e.c; c++) {
                     if (!/ACCESS ID|EMPLOYEE ID/i.test(String(cellAt(ws, hr - up, c) || ''))) continue;
@@ -1605,6 +1606,21 @@
                     }
                 }
             }
+            // Some sheets print the ID bare, in a column off the end of the table
+            // and with nothing labelling it — on the name row, or on the header
+            // row itself. Take a plain number from a column the table does not
+            // use, and never from a row that is actually a day of data.
+            for (let r = hr; r >= Math.max(rng.s.r, hr - 3) && !id; r--) {
+                if (r < hr && parseDate(cellAt(ws, r, map.date), null)) continue;
+                for (let c = rng.s.c; c <= rng.e.c; c++) {
+                    if (mappedCols.has(c)) continue;
+                    const v = cellAt(ws, r, c);
+                    if (v instanceof Date) continue;                 // a time, not an ID
+                    const digits = typeof v === 'number' ? String(v) : String(v == null ? '' : v).replace(/^'/, '').trim();
+                    if (/^\d{4,}$/.test(digits) && !/^(19|20)\d\d$/.test(digits)) { id = digits; break; }
+                }
+            }
+
             for (let up = 1; up <= 4 && hr - up >= 0 && !guard; up++) {
                 for (let c = rng.s.c; c <= rng.e.c; c++) {
                     const v = cellAt(ws, hr - up, c);
@@ -2423,7 +2439,7 @@
     // Accepts 10:20 · 10:20PM · 1020 · 1020H. The am/pm half matters: stripping
     // it made every scanned 12-hour time read as if it were 24-hour, so a
     // 06:00PM Time In came back as six in the morning.
-    const TIMEISH_RE = /^\d{1,2}\s*[:.;]\s*\d{2}\s*(?:[ap]\.?m\.?)?$|^\d{3,4}\s*h?$/i;
+    const TIMEISH_RE = /^\d{1,2}\s*[:.;'"’”]\s*\d{2}\s*(?:[ap]\.?m\.?)?$|^\d{3,4}\s*h?$/i;
     const OCR_KEEP_RE = /[^\dhH:;.aApPmM]/g;
     const UNREADABLE = '??:??';
 

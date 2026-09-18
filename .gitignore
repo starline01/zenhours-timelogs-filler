@@ -15,3 +15,6 @@ test/*.csv
 test/*.jpg
 test/*.png
 !test/fixtures/*.png
+
+# Fetched on first test run, not checked in
+test/vendor/

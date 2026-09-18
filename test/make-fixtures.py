@@ -86,6 +86,7 @@ def stacked_with_schedule(path):
 def _main():
     print('wrote', stacked_with_schedule(os.path.join(HERE, 'fixtures', 'stacked-with-schedule.xlsx')))
     print('wrote', roster_matrix(os.path.join(HERE, 'fixtures', 'roster-matrix.xlsx')))
+    print('wrote', bare_id_blocks(os.path.join(HERE, 'fixtures', 'bare-id-blocks.xlsx')))
 
 
 def roster_matrix(path):
@@ -131,6 +132,76 @@ def roster_matrix(path):
         ('NIGHT GUARD TWO', 'N/S', [(t(20, 51), t(9, 31)), (t(20, 54), t(9, 34)),
                                     (t(20, 53), t(9, 37)), (t(20, 55), t(9, 40)), (t(20, 47), t(9, 36))]),
     ])
+    wb.save(path)
+    return path
+
+
+def bare_id_blocks(path):
+    """Per-guard blocks with the access ID printed bare, past the table.
+
+    Shape of "ACTUAL SCHED AND TIME LOGS": one block per guard, each headed by
+    NAME and a header row, with the access ID sitting in a column past the last
+    header and nothing labelling it. The SCHEDULE column is labelled in the
+    first block and left blank in the others. One Break Out is written 18"45 -
+    a quote where a colon was meant - and one shift ends after midnight.
+    """
+    from datetime import datetime
+
+    def t(h, m):
+        return datetime(1899, 12, 31, h, m)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'ACTUAL SCHED AND TIME LOGS '
+
+    ws['B2'] = 'STARLINE SECURITY AGENCY'
+    ws['B3'] = 'ACTUAL TIME LOGS'
+    ws['B4'] = 'STORE: TEST BRANCH'
+    ws['B5'] = 'CUT OFF: SEPTEMBER  1-15, 2026'
+
+    HEAD = ['DATE', 'SCHEDULE', 'TIME IN', ' LUNCH OUT', 'LUNCH IN',
+            'BREAK OUT', 'BREAK IN', 'TIME OUT', ' NO. OF HOURS RENDERED', 'REMARKS']
+
+    blocks = [
+        # (name, access id, schedule column labelled?, rows)
+        ('GUARD ALPHA, ONE', 166166, True, [
+            (1, t(10, 10), t(13, 15), t(13, 45), t(18, 45), t(19, 15), t(1, 0), 15),
+            (2, t(10, 5), t(13, 25), t(13, 55), t(18, 15), t(18, 45), t(22, 30), 12),
+            (3, None, None, None, None, None, None, None),          # rest day
+        ]),
+        ('GUARD BRAVO, TWO', 153254, False, [
+            (1, t(9, 20), t(12, 15), t(12, 45), t(17, 20), t(17, 50), t(21, 30), 12),
+            (2, t(9, 20), t(12, 20), t(12, 50), t(17, 15), t(17, 45), t(21, 30), 12),
+        ]),
+        ('GUARD CHARLIE, THREE', 162269, False, [
+            # Break Out typed with a quote instead of a colon, and a 02:00 finish.
+            (1, t(10, 24), t(14, 10), t(14, 40), '18"45', t(19, 15), t(2, 0), 16),
+        ]),
+    ]
+
+    r = 8
+    for name, access_id, labelled, rows in blocks:
+        ws.cell(row=r, column=2, value='NAME: ' + name)
+        ws.cell(row=r, column=12, value=access_id)          # bare, nothing labels it
+        r += 1
+        for i, h in enumerate(HEAD):
+            if h == 'SCHEDULE' and not labelled:
+                continue
+            ws.cell(row=r, column=2 + i, value=h)
+        r += 1
+        for day, *cells in rows:
+            ws.cell(row=r, column=2, value=datetime(2026, 9, day))
+            if labelled:
+                ws.cell(row=r, column=3, value=t(9, 30))
+            for i, v in enumerate(cells[:6]):
+                if v is not None:
+                    ws.cell(row=r, column=4 + i, value=v)
+            if cells[6] is not None:
+                ws.cell(row=r, column=10, value=cells[6])
+            ws.cell(row=r, column=11, value=t(9, 30))        # REMARKS holds a time
+            r += 1
+        r += 3
+
     wb.save(path)
     return path
 

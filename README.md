@@ -257,7 +257,7 @@ Every sheet is classified before it's read, and the panel logs what it decided
 |---|---|---|
 | **column headers** | a header row naming Date + times **and** the guard | that row |
 | **personnel report** | `Personnel Name` / `DTR Summary Report`, `Time In 1..3` | the row |
-| **per-guard blocks** | `ACTUAL TIME LOGS`, `NAME:`, `SECURITY GUARD:` above each small table | the text above |
+| **per-guard blocks** | `ACTUAL TIME LOGS`, `NAME:`, `SECURITY GUARD:` above each small table | the text above, or a bare number past the table |
 | **day-number blocks** | `INNITIAL IN`, `L.B OUT`, `C.B OUT`, dates as 1–31 | name + month/year above |
 | **headerless columns** | name · date · weekday · six punches, no header at all | column A |
 | **biometric export** | repeated `Time In` / `Time Out` pairs, `Enroll No` | the row |
@@ -266,6 +266,18 @@ Every sheet is classified before it's read, and the panel logs what it decided
 
 A sheet of `SCHEDULE_START_DATE` / `ACTUAL SCHEDULE OF GUARDS` is recognised as
 **planned shifts, not punches**, and refused rather than imported.
+
+#### Access IDs with nothing labelling them
+
+Per-guard blocks normally name the ID (`ACCESS ID: 166166`). Some sheets just
+park the number in a column past the last header — on the guard's name row, or
+on the header row itself — with no label at all. That is now picked up, which
+matters because the access ID is the reliable way to tell which guard's page you
+are on; without it, matching falls back to the name alone.
+
+To avoid inventing an ID, only a plain whole number of four or more digits is
+taken, only from a column the table does not use, and never from a row that is
+itself a day of data. A bare year (`2026`) is ignored.
 
 **A sheet holding both is read correctly.** Many client DTRs put the planned
 roster at the top and the real punches (`ACTUAL TIME LOGS`) underneath, in the
@@ -472,14 +484,24 @@ sample row's HTML — which is what I need to adjust the column mapping.
 
 `test/make-fixtures.py` regenerates the sample workbooks under `test/fixtures/`.
 They mirror the *shape* of real client DTRs — schedule above time logs, letter-
-per-cell day-offs, night shifts, a mistyped punch — with invented names, so the
-layouts stay covered without client data in the repo:
+per-cell day-offs, night shifts, a mistyped punch, unlabelled access IDs — with
+invented names, so the layouts stay covered without client data in the repo:
 
 ```bash
 python test/make-fixtures.py
 ```
 
 Real client files dropped into `test/` are git-ignored.
+
+The workbook readers run against those fixtures under Node:
+
+```bash
+node test/read-workbooks.test.js
+```
+
+It loads the shipped userscript and the same SheetJS build the browser uses
+(fetched once into the git-ignored `test/vendor/`), so what is tested is the
+reader that ships, not a stand-in.
 
 `test/` holds a mock of the timelogs page that mirrors the real one (blank
 `--:--` grid, Edit → six inputs prefilled to `MM/DD/YYYY 12:00 AM`, Save/Cancel).
